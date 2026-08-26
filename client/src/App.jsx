@@ -5,6 +5,7 @@ function App() {
   const [roomId, setRoomId] = useState("");
   const [showJoin, setShowJoin] = useState(false);
   const [joinRoomId, setJoinRoomId] = useState("");
+  const [currentPage, setCurrentPage] = useState("home");
 
   const createRoom = () => {
     const newRoomId = Math.random().toString(36).substring(2, 8);
@@ -34,47 +35,76 @@ function App() {
         <h1>SyncSpace</h1>
 
         <nav>
-          <button>Home</button>
-          <button>Whiteboard</button>
-          <button>Code Editor</button>
+          <button onClick={() => setCurrentPage("home")}>
+            Home
+          </button>
+
+          <button onClick={() => setCurrentPage("whiteboard")}>
+            Whiteboard
+          </button>
+
+          <button onClick={() => setCurrentPage("code")}>
+            Code Editor
+          </button>
+
           <button onClick={joinRoom}>Join Room</button>
         </nav>
       </header>
 
-      <main>
-        <h2>Collaborate in Real Time</h2>
+      {currentPage === "home" && (
+        <main>
+          <h2>Collaborate in Real Time</h2>
 
-        <p>
-          Create, share, and collaborate using a real-time whiteboard
-          and code editor.
-        </p>
-
-        <button onClick={createRoom}>Create Room</button>
-        <button onClick={joinRoom}>Join Room</button>
-
-        {roomId && (
           <p>
-            Your Room ID: <strong>{roomId}</strong>
+            Create, share, and collaborate using a real-time whiteboard
+            and code editor.
           </p>
-        )}
 
-        {showJoin && (
-          <div>
-            <br />
+          <button onClick={createRoom}>Create Room</button>
+          <button onClick={joinRoom}>Join Room</button>
 
-            <input
-              type="text"
-              placeholder="Enter Room ID"
-              value={joinRoomId}
-              onChange={(e) => setJoinRoomId(e.target.value)}
-            />
+          {roomId && (
+            <p>
+              Your Room ID: <strong>{roomId}</strong>
+            </p>
+          )}
 
-            <button onClick={joinExistingRoom}>Join</button>
+          {showJoin && (
+            <div>
+              <br />
+
+              <input
+                type="text"
+                placeholder="Enter Room ID"
+                value={joinRoomId}
+                onChange={(e) => setJoinRoomId(e.target.value)}
+              />
+
+              <button onClick={joinExistingRoom}>Join</button>
+            </div>
+          )}
+
+          {message && <h3>{message}</h3>}
+        </main>
+      )}
+
+      {currentPage === "whiteboard" && (
+        <main>
+          <h2>Whiteboard</h2>
+          <p>Draw and collaborate with other users in real time.</p>
+
+          <div className="whiteboard">
+            <p>Whiteboard coming next...</p>
           </div>
-        )}
+        </main>
+      )}
 
-        {message && <h3>{message}</h3>}
-      </main>
+      {currentPage === "code" && (
+        <main>
+          <h2>Code Editor</h2>
+          <p>Collaborative code editor coming next...</p>
+        </main>
+      )}
     </div>
   );
 }
