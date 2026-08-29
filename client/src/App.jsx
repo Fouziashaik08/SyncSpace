@@ -1,50 +1,106 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
+import { Stage, Layer, Line, Rect, Text, Group } from "react-konva";
 
 const socket = io("http://localhost:3001");
 
 function App() {
   const [roomId, setRoomId] = useState("");
   const [joinRoomId, setJoinRoomId] = useState("");
+  const [name, setName] = useState("");
   const [message, setMessage] = useState("");
   const [inRoom, setInRoom] = useState(false);
+
+  const [tool, setTool] = useState("freehand");
+  const [lines, setLines] = useState([]);
+  const [rectangles, setRectangles] = useState([]);
+  const [texts, setTexts] = useState([]);
   const [code, setCode] = useState("");
 
-  const canvasRef = useRef(null);
-  const isDrawing = useRef(false);
-  const lastPoint = useRef({ x: 0, y: 0 });
+  const [cursors, setCursors] = useState({});
+
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [lastPoint, setLastPoint] = useState(null);
 
   useEffect(() => {
-    socket.on("whiteboard-draw", (data) => {
-      drawRemote(data);
+    socket.on("whiteboard-object", (data) => {
+      if (data.type === "line") {
+        setLines((prev) => [...prev, data.object]);
+      }
+
+      if (data.type === "rect") {
+        setRectangles((prev) => [...prev, data.object]);
+      }
+
+      if (data.type === "text") {
+        setTexts((prev) => [...prev, data.object]);
+      }
     });
 
     socket.on("clear-whiteboard", () => {
-      clearCanvas();
+      setLines([]);
+      setRectangles([]);
+      setTexts([]);
     });
 
     socket.on("code-update", (newCode) => {
       setCode(newCode);
     });
 
+    socket.on("cursor-move", (data) => {
+      setCursors((prev) => ({
+        ...prev,
+        [data.id]: {
+          name: data.name,
+          x: data.x,
+          y: data.y,
+        },
+      }));
+    });
+
+    socket.on("user-left", (userId) => {
+      setCursors((prev) => {
+        const updated = { ...prev };
+        delete updated[userId];
+        return updated;
+      });
+    });
+
     return () => {
-      socket.off("whiteboard-draw");
+      socket.off("whiteboard-object");
       socket.off("clear-whiteboard");
       socket.off("code-update");
+      socket.off("cursor-move");
+      socket.off("user-left");
     };
   }, []);
 
   const createRoom = () => {
-    const newRoomId = Math.random().toString(36).substring(2, 8);
+    if (!name.trim()) {
+      setMessage("Please enter your name first.");
+      return;
+    }
+
+    const newRoomId = Math.random()
+      .toString(36)
+      .substring(2, 8);
 
     setRoomId(newRoomId);
     setInRoom(true);
     setMessage(`Room created: ${newRoomId}`);
 
-    socket.emit("join-room", newRoomId);
+    socket.emit("join-room", {
+      roomId: newRoomId,
+      name: name.trim(),
+    });
   };
 
   const joinRoom = () => {
+    if (!name.trim()) {
+      setMessage("Please enter your name first.");
+      return;
+    }
+
     if (!joinRoomId.trim()) {
       setMessage("Please enter a Room ID.");
       return;
@@ -56,99 +112,154 @@ function App() {
     setInRoom(true);
     setMessage(`Joined room: ${id}`);
 
-    socket.emit("join-room", id);
+    socket.emit("join-room", {
+      roomId: id,
+      name: name.trim(),
+    });
   };
 
   const leaveRoom = () => {
-    if (roomId) {
-      socket.emit("leave-room", roomId);
-    }
+    socket.emit("leave-room", roomId);
 
     setRoomId("");
     setJoinRoomId("");
     setInRoom(false);
     setMessage("");
+    setLines([]);
+    setRectangles([]);
+    setTexts([]);
     setCode("");
-    clearCanvas();
+    setCursors({});
   };
 
-  const startDrawing = (e) => {
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
+  const handleMouseDown = (e) => {
+    if (tool !== "freehand") return;
 
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const stage = e.target.getStage();
+    const point = stage.getPointerPosition();
 
-    isDrawing.current = true;
-    lastPoint.current = { x, y };
+    setIsDrawing(true);
+    setLastPoint(point);
+
+    const newLine = {
+      points: [point.x, point.y],
+    };
+
+    setLines((prev) => [...prev, newLine]);
   };
 
-  const draw = (e) => {
-    if (!isDrawing.current) return;
+  const handleMouseMove = (e) => {
+    const stage = e.target.getStage();
+    const point = stage.getPointerPosition();
 
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    const rect = canvas.getBoundingClientRect();
+    // Send cursor position
+    if (inRoom) {
+      socket.emit("cursor-move", {
+        roomId,
+        x: point.x,
+        y: point.y,
+      });
+    }
 
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    if (!isDrawing || tool !== "freehand" || !lastPoint) {
+      return;
+    }
 
-    const prevX = lastPoint.current.x;
-    const prevY = lastPoint.current.y;
+    setLines((prev) => {
+      const lastLine = prev[prev.length - 1];
 
-    ctx.beginPath();
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    ctx.moveTo(prevX, prevY);
-    ctx.lineTo(x, y);
-    ctx.stroke();
+      if (!lastLine) return prev;
 
-    socket.emit("whiteboard-draw", {
-      roomId,
-      x,
-      y,
-      prevX,
-      prevY,
+      const updatedLine = {
+        ...lastLine,
+        points: [
+          ...lastLine.points,
+          point.x,
+          point.y,
+        ],
+      };
+
+      return [
+        ...prev.slice(0, -1),
+        updatedLine,
+      ];
     });
 
-    lastPoint.current = { x, y };
+    setLastPoint(point);
   };
 
-  const drawRemote = (data) => {
-    const canvas = canvasRef.current;
+  const handleMouseUp = () => {
+    if (!isDrawing) return;
 
-    if (!canvas) return;
+    setIsDrawing(false);
 
-    const ctx = canvas.getContext("2d");
+    setLines((currentLines) => {
+      const newLine =
+        currentLines[currentLines.length - 1];
 
-    ctx.beginPath();
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    ctx.moveTo(data.prevX, data.prevY);
-    ctx.lineTo(data.x, data.y);
-    ctx.stroke();
+      if (newLine) {
+        socket.emit("whiteboard-object", {
+          roomId,
+          type: "line",
+          object: newLine,
+        });
+      }
+
+      return currentLines;
+    });
+
+    setLastPoint(null);
   };
 
-  const stopDrawing = () => {
-    isDrawing.current = false;
+  const addRectangle = () => {
+    const newRectangle = {
+      x: 100,
+      y: 100,
+      width: 150,
+      height: 100,
+      stroke: "black",
+      strokeWidth: 3,
+    };
+
+    setRectangles((prev) => [
+      ...prev,
+      newRectangle,
+    ]);
+
+    socket.emit("whiteboard-object", {
+      roomId,
+      type: "rect",
+      object: newRectangle,
+    });
   };
 
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
+  const addText = () => {
+    const newText = {
+      x: 150,
+      y: 150,
+      text: "SyncSpace Text",
+      fontSize: 24,
+      fill: "black",
+    };
 
-    if (!canvas) return;
+    setTexts((prev) => [
+      ...prev,
+      newText,
+    ]);
 
-    const ctx = canvas.getContext("2d");
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    socket.emit("whiteboard-object", {
+      roomId,
+      type: "text",
+      object: newText,
+    });
   };
 
   const clearWhiteboard = () => {
-    clearCanvas();
+    setLines([]);
+    setRectangles([]);
+    setTexts([]);
 
-    if (roomId) {
-      socket.emit("clear-whiteboard", roomId);
-    }
+    socket.emit("clear-whiteboard", roomId);
   };
 
   const handleCodeChange = (e) => {
@@ -175,6 +286,18 @@ function App() {
       {!inRoom ? (
         <main>
           <h2>Welcome to SyncSpace</h2>
+
+          <input
+            type="text"
+            placeholder="Enter your name"
+            value={name}
+            onChange={(e) =>
+              setName(e.target.value)
+            }
+          />
+
+          <br />
+          <br />
 
           <button onClick={createRoom}>
             Create Room
@@ -207,34 +330,106 @@ function App() {
             Room ID: <strong>{roomId}</strong>
           </p>
 
+          <p>
+            You are: <strong>{name}</strong>
+          </p>
+
           <button onClick={leaveRoom}>
             Leave Room
           </button>
+
+          <hr />
+
+          <div>
+            <button
+              onClick={() => setTool("freehand")}
+            >
+              ✏️ Freehand
+            </button>
+
+            <button onClick={addRectangle}>
+              ▭ Rectangle
+            </button>
+
+            <button onClick={addText}>
+              T Text
+            </button>
+
+            <button onClick={clearWhiteboard}>
+              Clear
+            </button>
+          </div>
 
           <div className="workspace">
             <div className="whiteboard">
               <h2>Whiteboard</h2>
 
-              <canvas
-                ref={canvasRef}
+              <Stage
                 width={600}
                 height={350}
+                onMouseDown={handleMouseDown}
+                onMousemove={handleMouseMove}
+                onMouseup={handleMouseUp}
                 style={{
                   border: "2px solid black",
                   background: "white",
-                  cursor: "crosshair",
                 }}
-                onMouseDown={startDrawing}
-                onMouseMove={draw}
-                onMouseUp={stopDrawing}
-                onMouseLeave={stopDrawing}
-              />
+              >
+                <Layer>
+                  {lines.map((line, index) => (
+                    <Line
+                      key={`line-${index}`}
+                      points={line.points}
+                      stroke="black"
+                      strokeWidth={3}
+                      lineCap="round"
+                      lineJoin="round"
+                    />
+                  ))}
 
-              <br />
+                  {rectangles.map(
+                    (rect, index) => (
+                      <Rect
+                        key={`rect-${index}`}
+                        {...rect}
+                      />
+                    )
+                  )}
 
-              <button onClick={clearWhiteboard}>
-                Clear Whiteboard
-              </button>
+                  {texts.map(
+                    (text, index) => (
+                      <Text
+                        key={`text-${index}`}
+                        {...text}
+                      />
+                    )
+                  )}
+
+                  {Object.entries(cursors).map(
+                    ([id, cursor]) => (
+                      <Group
+                        key={id}
+                        x={cursor.x}
+                        y={cursor.y}
+                      >
+                        <Text
+                          text={`👤 ${cursor.name}`}
+                          fontSize={14}
+                          fill="blue"
+                          padding={4}
+                        />
+
+                        <Text
+                          text="▼"
+                          y={18}
+                          fontSize={16}
+                          fill="blue"
+                        />
+                      </Group>
+                    )
+                  )}
+                </Layer>
+              </Stage>
             </div>
 
             <div className="code-editor">

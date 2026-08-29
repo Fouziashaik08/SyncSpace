@@ -16,24 +16,34 @@ const io = new Server(server, {
   },
 });
 
+const users = {};
+
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
-  socket.on("join-room", (roomId) => {
+  socket.on("join-room", (data) => {
+    const { roomId, name } = data;
+
     socket.join(roomId);
 
-    console.log(`User ${socket.id} joined room ${roomId}`);
+    users[socket.id] = {
+      roomId,
+      name,
+      x: 0,
+      y: 0,
+    };
+
+    console.log(`${name} joined room ${roomId}`);
+
+    socket.to(roomId).emit("user-joined", {
+      id: socket.id,
+      name,
+    });
   });
 
-  socket.on("leave-room", (roomId) => {
-    socket.leave(roomId);
-
-    console.log(`User ${socket.id} left room ${roomId}`);
-  });
-
-  // Whiteboard drawing
-  socket.on("whiteboard-draw", (data) => {
-    socket.to(data.roomId).emit("whiteboard-draw", data);
+  // Whiteboard objects
+  socket.on("whiteboard-object", (data) => {
+    socket.to(data.roomId).emit("whiteboard-object", data);
   });
 
   // Clear whiteboard
@@ -41,12 +51,44 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("clear-whiteboard");
   });
 
-  // Code editor synchronization
+  // Code editor
   socket.on("code-update", (data) => {
     socket.to(data.roomId).emit("code-update", data.code);
   });
 
+  // Cursor awareness
+  socket.on("cursor-move", (data) => {
+    if (users[socket.id]) {
+      users[socket.id].x = data.x;
+      users[socket.id].y = data.y;
+
+      socket.to(data.roomId).emit("cursor-move", {
+        id: socket.id,
+        name: users[socket.id].name,
+        x: data.x,
+        y: data.y,
+      });
+    }
+  });
+
+  socket.on("leave-room", (roomId) => {
+    socket.leave(roomId);
+
+    delete users[socket.id];
+
+    socket.to(roomId).emit("user-left", socket.id);
+
+    console.log(`User left room ${roomId}`);
+  });
+
   socket.on("disconnect", () => {
+    const user = users[socket.id];
+
+    if (user) {
+      socket.to(user.roomId).emit("user-left", socket.id);
+      delete users[socket.id];
+    }
+
     console.log("User disconnected:", socket.id);
   });
 });
