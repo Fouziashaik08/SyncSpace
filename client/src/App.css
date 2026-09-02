@@ -1,30 +1,40 @@
-/* =========================
-   WHITEBOARD
-========================= */
+/* =========================================
+   SYNCSpace - WHITEBOARD
+========================================= */
 
 .canvas-board {
   width: 100%;
   max-width: 850px;
   margin: 30px auto;
   padding: 25px;
-  background: #1e293b;
-  border-radius: 20px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  background: linear-gradient(145deg, #1e293b, #172033);
+  border: 1px solid rgba(96, 165, 250, 0.15);
+  border-radius: 22px;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.35),
+    0 0 40px rgba(37, 99, 235, 0.08);
+  box-sizing: border-box;
 }
+
+/* =========================================
+   TOOLBAR
+========================================= */
 
 .canvas-toolbar {
   text-align: center;
-  margin-bottom: 20px;
+  margin-bottom: 15px;
 }
 
 .toolbar-title {
-  color: white;
+  color: #ffffff;
   font-size: 22px;
   font-weight: 700;
   margin-bottom: 15px;
 }
 
-.toolbar-buttons {
+/* Buttons container */
+
+.toolbar-tools {
   display: flex;
   justify-content: center;
   align-items: center;
@@ -32,8 +42,11 @@
   gap: 10px;
 }
 
-.tool-button,
-.clear-button {
+/* =========================================
+   TOOL BUTTONS
+========================================= */
+
+.toolbar-tools button {
   border: none;
   padding: 12px 18px;
   border-radius: 10px;
@@ -42,47 +55,112 @@
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+
+  transition:
+    transform 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
-.tool-button:hover,
-.clear-button:hover {
-  transform: translateY(-2px);
+.toolbar-tools button:hover {
+  transform: translateY(-3px);
   background: #3b82f6;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.3);
 }
 
-.tool-button.active {
+/* Active tool */
+
+.toolbar-tools .active-tool {
   background: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+  box-shadow:
+    0 0 0 3px rgba(245, 158, 11, 0.25),
+    0 8px 20px rgba(245, 158, 11, 0.2);
 }
 
-.clear-button {
+/* Clear button */
+
+.toolbar-tools .clear-tool {
   background: #dc2626;
 }
 
-.clear-button:hover {
+.toolbar-tools .clear-tool:hover {
   background: #ef4444;
+  box-shadow: 0 8px 20px rgba(239, 68, 68, 0.25);
 }
 
+/* =========================================
+   TOOL INFORMATION
+========================================= */
+
 .tool-info {
-  margin-top: 15px;
+  margin: 15px 0 18px;
+
   color: #cbd5e1;
+
   font-size: 14px;
   text-align: center;
+
+  min-height: 20px;
 }
+
+/* =========================================
+   CANVAS
+========================================= */
 
 .canvas-container {
   width: 100%;
+
   overflow-x: auto;
-  background: white;
+
+  background: #ffffff;
+
   border-radius: 14px;
+
   padding: 10px;
+
   box-sizing: border-box;
-  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.08);
+
+  box-shadow:
+    inset 0 0 20px rgba(0, 0, 0, 0.08),
+    0 10px 30px rgba(0, 0, 0, 0.2);
 }
+
+/* Konva canvas */
 
 .canvas-container canvas {
   display: block;
+
   margin: auto;
+
   border-radius: 8px;
+
+  cursor: crosshair;
+}
+
+/* =========================================
+   MOBILE
+========================================= */
+
+@media (max-width: 700px) {
+  .canvas-board {
+    padding: 15px;
+    margin: 20px auto;
+  }
+
+  .toolbar-title {
+    font-size: 19px;
+  }
+
+  .toolbar-tools {
+    gap: 7px;
+  }
+
+  .toolbar-tools button {
+    padding: 10px 13px;
+    font-size: 13px;
+  }
+
+  .canvas-container {
+    overflow-x: auto;
+  }
 }
