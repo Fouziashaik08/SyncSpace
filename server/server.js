@@ -5,22 +5,19 @@ const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
 
 const app = express();
-
-app.use(cors());
-app.use(express.json());
-
 const server = http.createServer(app);
 
-// =========================
-// JWT
-// =========================
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  })
+);
+
+app.use(express.json());
 
 const JWT_SECRET = "syncspace_secret_key_2026";
-
-// =========================
-// TEMPORARY USERS
-// Later MongoDB mein move karenge
-// =========================
+const PORT = 3001;
 
 const usersDatabase = [
   {
@@ -43,42 +40,10 @@ const usersDatabase = [
   },
 ];
 
-// =========================
-// ROOMS
-// =========================
-
-// Example:
-//
-// rooms = {
-//   abc123: {
-//     ownerId: "user1",
-//     invitedUsers: ["user2", "user3"]
-//   }
-// }
-
 const rooms = {};
-
-// =========================
-// REPLAY HISTORY
-// =========================
-
-// Example:
-//
-// roomHistory = {
-//   abc123: [
-//     {
-//       type: "line",
-//       object: {...},
-//       timestamp: 123456789
-//     }
-//   ]
-// }
-
 const roomHistory = {};
-
-// =========================
-// SOCKET.IO
-// =========================
+const invitations = {};
+const users = {};
 
 const io = new Server(server, {
   cors: {
@@ -87,23 +52,12 @@ const io = new Server(server, {
   },
 });
 
-// =========================
-// CONNECTED USERS
-// =========================
-
-const users = {};
-
-// =========================
-// JWT MIDDLEWARE
-// =========================
-
 function authenticateToken(req, res, next) {
-  const authHeader =
-    req.headers.authorization;
-
+  const authHeader = req.headers.authorization;
   const token =
-    authHeader &&
-    authHeader.split(" ")[1];
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.split(" ")[1]
+      : null;
 
   if (!token) {
     return res.status(401).json({
@@ -111,29 +65,42 @@ function authenticateToken(req, res, next) {
     });
   }
 
-  jwt.verify(
-    token,
-    JWT_SECRET,
-    (err, user) => {
-      if (err) {
-        return res.status(403).json({
-          message:
-            "Invalid or expired token",
-        });
-      }
-
-      req.user = user;
-
-      next();
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({
+        message: "Invalid or expired token",
+      });
     }
-  );
+
+    req.user = user;
+    next();
+  });
 }
 
-// =========================
-// REPLAY HISTORY FUNCTION
-// =========================
+function generateRoomId() {
+  let roomId = "";
+
+  do {
+    roomId = Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase();
+  } while (rooms[roomId]);
+
+  return roomId;
+}
+
+function generateInvitationId() {
+  return `inv_${Date.now()}_${Math.random()
+    .toString(36)
+    .substring(2, 9)}`;
+}
 
 function recordHistory(roomId, event) {
+  if (!roomId || !event) {
+    return;
+  }
+
   if (!roomHistory[roomId]) {
     roomHistory[roomId] = [];
   }
@@ -143,31 +110,56 @@ function recordHistory(roomId, event) {
     timestamp: Date.now(),
   });
 
-  console.log(
-    `History recorded for room ${roomId}`
-  );
+  console.log(`History recorded for room ${roomId}`);
 }
 
-// =========================
-// LOGIN
-// =========================
+function getRoomAccess(roomId, userId) {
+  const room = rooms[roomId];
+
+  if (!room) {
+    return {
+      exists: false,
+      isOwner: false,
+      isInvited: false,
+      hasAccess: false,
+    };
+  }
+
+  const isOwner = room.ownerId === userId;
+  const isInvited = room.invitedUsers.includes(userId);
+
+  return {
+    exists: true,
+    isOwner,
+    isInvited,
+    hasAccess: isOwner || isInvited,
+  };
+}
+
+app.get("/", (req, res) => {
+  res.send("SyncSpace server is running!");
+});
 
 app.post("/login", (req, res) => {
-  const { email, password } =
-    req.body;
+  const email =
+    typeof req.body?.email === "string"
+      ? req.body.email.trim().toLowerCase()
+      : "";
 
-  const user =
-    usersDatabase.find(
-      (user) =>
-        user.email.toLowerCase() ===
-          email?.toLowerCase() &&
-        user.password === password
-    );
+  const password =
+    typeof req.body?.password === "string"
+      ? req.body.password
+      : "";
+
+  const user = usersDatabase.find(
+    (item) =>
+      item.email.toLowerCase() === email &&
+      item.password === password
+  );
 
   if (!user) {
     return res.status(401).json({
-      message:
-        "Invalid email or password",
+      message: "Invalid email or password",
     });
   }
 
@@ -185,9 +177,7 @@ app.post("/login", (req, res) => {
 
   res.json({
     message: "Login successful",
-
     token,
-
     user: {
       id: user.id,
       name: user.name,
@@ -196,42 +186,28 @@ app.post("/login", (req, res) => {
   });
 });
 
-// =========================
-// PROFILE
-// =========================
-
 app.get(
   "/profile",
   authenticateToken,
   (req, res) => {
     res.json({
-      message:
-        "You are authenticated!",
-
+      message: "You are authenticated!",
       user: req.user,
     });
   }
 );
 
-// =========================
-// CREATE ROOM
-// =========================
-
 app.post(
   "/rooms",
   authenticateToken,
   (req, res) => {
-    const roomId =
-      Math.random()
-        .toString(36)
-        .substring(2, 8);
+    const roomId = generateRoomId();
 
     rooms[roomId] = {
       ownerId: req.user.id,
       invitedUsers: [],
     };
 
-    // Initialize replay history
     roomHistory[roomId] = [];
 
     console.log(
@@ -239,69 +215,49 @@ app.post(
     );
 
     res.json({
-      message:
-        "Room created successfully",
-
+      message: "Room created successfully",
       roomId,
-
-      ownerId:
-        req.user.id,
+      ownerId: req.user.id,
     });
   }
 );
-
-// =========================
-// INVITE USER
-// =========================
 
 app.post(
   "/rooms/:roomId/invite",
   authenticateToken,
   (req, res) => {
-    const { roomId } =
-      req.params;
+    const { roomId } = req.params;
 
-    const { email } =
-      req.body;
+    const email =
+      typeof req.body?.email === "string"
+        ? req.body.email.trim().toLowerCase()
+        : "";
 
-    const room =
-      rooms[roomId];
+    const room = rooms[roomId];
 
-    // Room check
     if (!room) {
       return res.status(404).json({
-        message:
-          "Room not found",
+        message: "Room not found",
       });
     }
 
-    // Only owner can invite
-    if (
-      room.ownerId !==
-      req.user.id
-    ) {
+    if (room.ownerId !== req.user.id) {
       return res.status(403).json({
         message:
           "Only the room owner can invite users",
       });
     }
 
-    // Email check
     if (!email) {
       return res.status(400).json({
-        message:
-          "User email is required",
+        message: "User email is required",
       });
     }
 
-    // Find registered user
-    const invitedUser =
-      usersDatabase.find(
-        (user) =>
-          user.email.toLowerCase() ===
-          email
-            .toLowerCase()
-      );
+    const invitedUser = usersDatabase.find(
+      (user) =>
+        user.email.toLowerCase() === email
+    );
 
     if (!invitedUser) {
       return res.status(404).json({
@@ -310,33 +266,56 @@ app.post(
       });
     }
 
-    // Owner already has access
-    if (
-      invitedUser.id ===
-      room.ownerId
-    ) {
+    if (invitedUser.id === room.ownerId) {
       return res.status(400).json({
         message:
           "Room owner already has access",
       });
     }
 
-    // Duplicate invitation
     if (
       room.invitedUsers.includes(
         invitedUser.id
       )
     ) {
       return res.status(400).json({
-        message:
-          "User is already invited",
+        message: "User is already a member",
       });
     }
 
-    // Add user
-    room.invitedUsers.push(
-      invitedUser.id
-    );
+    const existingInvitation =
+      Object.values(invitations).find(
+        (invitation) =>
+          invitation.roomId === roomId &&
+          invitation.recipientId ===
+            invitedUser.id &&
+          invitation.status === "pending"
+      );
+
+    if (existingInvitation) {
+      return res.status(400).json({
+        message:
+          "Invitation is already pending",
+      });
+    }
+
+    const invitationId =
+      generateInvitationId();
+
+    invitations[invitationId] = {
+      id: invitationId,
+      roomId,
+      senderId: req.user.id,
+      senderName: req.user.name,
+      senderEmail: req.user.email,
+      recipientId: invitedUser.id,
+      recipientName: invitedUser.name,
+      recipientEmail: invitedUser.email,
+      status: "pending",
+      createdAt: Date.now(),
+      acceptedAt: null,
+      declinedAt: null,
+    };
 
     console.log(
       `${invitedUser.name} invited to room ${roomId}`
@@ -344,10 +323,8 @@ app.post(
 
     res.json({
       message:
-        "User invited successfully",
-
-      roomId,
-
+        "Invitation sent successfully",
+      invitation: invitations[invitationId],
       invitedUser: {
         id: invitedUser.id,
         name: invitedUser.name,
@@ -357,92 +334,194 @@ app.post(
   }
 );
 
-// =========================
-// ROOM ACCESS CHECK
-// =========================
+app.get(
+  "/invitations",
+  authenticateToken,
+  (req, res) => {
+    const userInvitations = Object.values(
+      invitations
+    )
+      .filter(
+        (invitation) =>
+          invitation.recipientId ===
+            req.user.id &&
+          invitation.status === "pending"
+      )
+      .sort(
+        (a, b) =>
+          b.createdAt - a.createdAt
+      );
+
+    res.json({
+      invitations: userInvitations,
+    });
+  }
+);
+
+app.post(
+  "/invitations/:invitationId/accept",
+  authenticateToken,
+  (req, res) => {
+    const { invitationId } =
+      req.params;
+
+    const invitation =
+      invitations[invitationId];
+
+    if (!invitation) {
+      return res.status(404).json({
+        message: "Invitation not found",
+      });
+    }
+
+    if (
+      invitation.recipientId !==
+      req.user.id
+    ) {
+      return res.status(403).json({
+        message:
+          "You cannot accept this invitation",
+      });
+    }
+
+    if (invitation.status !== "pending") {
+      return res.status(400).json({
+        message:
+          "This invitation is no longer pending",
+      });
+    }
+
+    const room =
+      rooms[invitation.roomId];
+
+    if (!room) {
+      invitation.status = "expired";
+
+      return res.status(404).json({
+        message:
+          "The room no longer exists",
+      });
+    }
+
+    if (
+      !room.invitedUsers.includes(
+        req.user.id
+      )
+    ) {
+      room.invitedUsers.push(
+        req.user.id
+      );
+    }
+
+    invitation.status = "accepted";
+    invitation.acceptedAt = Date.now();
+
+    console.log(
+      `${req.user.name} accepted invitation for room ${invitation.roomId}`
+    );
+
+    res.json({
+      message:
+        "Invitation accepted successfully",
+      roomId: invitation.roomId,
+      invitation,
+    });
+  }
+);
+
+app.post(
+  "/invitations/:invitationId/decline",
+  authenticateToken,
+  (req, res) => {
+    const { invitationId } =
+      req.params;
+
+    const invitation =
+      invitations[invitationId];
+
+    if (!invitation) {
+      return res.status(404).json({
+        message: "Invitation not found",
+      });
+    }
+
+    if (
+      invitation.recipientId !==
+      req.user.id
+    ) {
+      return res.status(403).json({
+        message:
+          "You cannot decline this invitation",
+      });
+    }
+
+    if (invitation.status !== "pending") {
+      return res.status(400).json({
+        message:
+          "This invitation is no longer pending",
+      });
+    }
+
+    invitation.status = "declined";
+    invitation.declinedAt = Date.now();
+
+    console.log(
+      `${req.user.name} declined invitation for room ${invitation.roomId}`
+    );
+
+    res.json({
+      message:
+        "Invitation declined successfully",
+      invitation,
+    });
+  }
+);
 
 app.get(
   "/rooms/:roomId/access",
   authenticateToken,
   (req, res) => {
-    const { roomId } =
-      req.params;
+    const { roomId } = req.params;
 
-    const room =
-      rooms[roomId];
+    const access = getRoomAccess(
+      roomId,
+      req.user.id
+    );
 
-    if (!room) {
+    if (!access.exists) {
       return res.status(404).json({
-        message:
-          "Room not found",
-
+        message: "Room not found",
         hasAccess: false,
       });
     }
 
-    const isOwner =
-      room.ownerId ===
-      req.user.id;
-
-    const isInvited =
-      room.invitedUsers.includes(
-        req.user.id
-      );
-
-    const hasAccess =
-      isOwner ||
-      isInvited;
-
     res.json({
       roomId,
-
-      hasAccess,
-
-      isOwner,
-
-      isInvited,
+      hasAccess: access.hasAccess,
+      isOwner: access.isOwner,
+      isInvited: access.isInvited,
     });
   }
 );
-
-// =========================
-// REPLAY HISTORY API
-// =========================
 
 app.get(
   "/rooms/:roomId/history",
   authenticateToken,
   (req, res) => {
-    const { roomId } =
-      req.params;
+    const { roomId } = req.params;
 
-    const room =
-      rooms[roomId];
+    const access = getRoomAccess(
+      roomId,
+      req.user.id
+    );
 
-    // Room check
-    if (!room) {
+    if (!access.exists) {
       return res.status(404).json({
-        message:
-          "Room not found",
+        message: "Room not found",
       });
     }
 
-    // Owner check
-    const isOwner =
-      room.ownerId ===
-      req.user.id;
-
-    // Invitation check
-    const isInvited =
-      room.invitedUsers.includes(
-        req.user.id
-      );
-
-    // Access control
-    if (
-      !isOwner &&
-      !isInvited
-    ) {
+    if (!access.hasAccess) {
       return res.status(403).json({
         message:
           "You do not have access to this room",
@@ -451,407 +530,375 @@ app.get(
 
     res.json({
       roomId,
-
       history:
-        roomHistory[roomId] ||
-        [],
+        roomHistory[roomId] || [],
     });
   }
 );
 
-// =========================
-// SOCKET.IO CONNECTION
-// =========================
+io.on("connection", (socket) => {
+  console.log(
+    "User connected:",
+    socket.id
+  );
 
-io.on(
-  "connection",
-  (socket) => {
-    console.log(
-      "User connected:",
-      socket.id
-    );
+  socket.on("join-room", (data) => {
+    if (!data || typeof data !== "object") {
+      socket.emit("auth-error", {
+        message:
+          "Invalid room join request",
+      });
 
-    // =========================
-    // JOIN ROOM
-    // =========================
+      return;
+    }
 
-    socket.on(
-      "join-room",
-      (data) => {
-        const {
-          roomId,
-          name,
-          token,
-        } = data;
+    const roomId =
+      typeof data.roomId === "string"
+        ? data.roomId.trim()
+        : "";
 
-        // Token required
-        if (!token) {
-          socket.emit(
-            "auth-error",
-            {
-              message:
-                "Authentication required",
-            }
-          );
+    const name =
+      typeof data.name === "string"
+        ? data.name.trim()
+        : "";
 
-          return;
-        }
+    const token =
+      typeof data.token === "string"
+        ? data.token
+        : "";
 
-        try {
-          // Verify JWT
-          const decoded =
-            jwt.verify(
-              token,
-              JWT_SECRET
-            );
+    if (!roomId) {
+      socket.emit("auth-error", {
+        message: "Room ID is required",
+      });
 
-          // Check room
-          const room =
-            rooms[roomId];
+      return;
+    }
 
-          if (!room) {
-            socket.emit(
-              "auth-error",
-              {
-                message:
-                  "Room does not exist",
-              }
-            );
+    if (!token) {
+      socket.emit("auth-error", {
+        message:
+          "Authentication required",
+      });
 
-            return;
-          }
+      return;
+    }
 
-          // Check owner
-          const isOwner =
-            room.ownerId ===
-            decoded.id;
+    try {
+      const decoded = jwt.verify(
+        token,
+        JWT_SECRET
+      );
 
-          // Check invitation
-          const isInvited =
-            room.invitedUsers.includes(
-              decoded.id
-            );
+      const room = rooms[roomId];
 
-          // Access control
-          if (
-            !isOwner &&
-            !isInvited
-          ) {
-            socket.emit(
-              "auth-error",
-              {
-                message:
-                  "You are not invited to this room",
-              }
-            );
+      if (!room) {
+        socket.emit("auth-error", {
+          message: "Room does not exist",
+        });
 
-            console.log(
-              `${decoded.name} tried to access room ${roomId} without invitation`
-            );
-
-            return;
-          }
-
-          // Join Socket.IO room
-          socket.join(roomId);
-
-          // Store connected user
-          users[socket.id] = {
-            userId:
-              decoded.id,
-
-            roomId,
-
-            name:
-              decoded.name ||
-              name,
-
-            x: 0,
-
-            y: 0,
-          };
-
-          console.log(
-            `${decoded.name} joined room ${roomId}`
-          );
-
-          // Tell current user
-          socket.emit(
-            "room-joined",
-            {
-              roomId,
-
-              user: {
-                id:
-                  decoded.id,
-
-                name:
-                  decoded.name,
-              },
-            }
-          );
-
-          // Tell other users
-          socket
-            .to(roomId)
-            .emit(
-              "user-joined",
-              {
-                id:
-                  socket.id,
-
-                name:
-                  decoded.name,
-              }
-            );
-        } catch (error) {
-          socket.emit(
-            "auth-error",
-            {
-              message:
-                "Invalid or expired token",
-            }
-          );
-
-          console.log(
-            "Unauthorized room join attempt"
-          );
-        }
+        return;
       }
-    );
 
-    // =========================
-    // WHITEBOARD OBJECT
-    // =========================
+      const isOwner =
+        room.ownerId === decoded.id;
 
-    socket.on(
-      "whiteboard-object",
-      (data) => {
-        const user =
-          users[socket.id];
-
-        if (!user) {
-          return;
-        }
-
-        // Record action for replay
-        recordHistory(
-          user.roomId,
-          {
-            type:
-              data.type,
-
-            object:
-              data.object,
-          }
+      const isInvited =
+        room.invitedUsers.includes(
+          decoded.id
         );
 
-        // Send to other users
-        socket
-          .to(user.roomId)
-          .emit(
-            "whiteboard-object",
-            data
-          );
-      }
-    );
-
-    // =========================
-    // CLEAR WHITEBOARD
-    // =========================
-
-    socket.on(
-      "clear-whiteboard",
-      (roomId) => {
-        const user =
-          users[socket.id];
-
-        if (!user) {
-          return;
-        }
-
-        if (
-          user.roomId !==
-          roomId
-        ) {
-          return;
-        }
-
-        // Record clear action
-        recordHistory(
-          roomId,
-          {
-            type: "clear",
-          }
-        );
-
-        // Send to other users
-        socket
-          .to(roomId)
-          .emit(
-            "clear-whiteboard"
-          );
-      }
-    );
-
-    // =========================
-    // CODE UPDATE
-    // =========================
-
-    socket.on(
-      "code-update",
-      (data) => {
-        const user =
-          users[socket.id];
-
-        if (!user) {
-          return;
-        }
-
-        // Record code state
-        recordHistory(
-          user.roomId,
-          {
-            type: "code",
-            code:
-              data.code,
-          }
-        );
-
-        // Send to other users
-        socket
-          .to(user.roomId)
-          .emit(
-            "code-update",
-            data.code
-          );
-      }
-    );
-
-    // =========================
-    // CURSOR
-    // =========================
-
-    socket.on(
-      "cursor-move",
-      (data) => {
-        const user =
-          users[socket.id];
-
-        if (!user) {
-          return;
-        }
-
-        user.x = data.x;
-        user.y = data.y;
-
-        socket
-          .to(user.roomId)
-          .emit(
-            "cursor-move",
-            {
-              id:
-                socket.id,
-
-              name:
-                user.name,
-
-              x:
-                data.x,
-
-              y:
-                data.y,
-            }
-          );
-      }
-    );
-
-    // =========================
-    // LEAVE ROOM
-    // =========================
-
-    socket.on(
-      "leave-room",
-      (roomId) => {
-        const user =
-          users[socket.id];
-
-        if (!user) {
-          return;
-        }
-
-        socket.leave(roomId);
-
-        socket
-          .to(roomId)
-          .emit(
-            "user-left",
-            socket.id
-          );
-
-        delete users[
-          socket.id
-        ];
+      if (!isOwner && !isInvited) {
+        socket.emit("auth-error", {
+          message:
+            "You are not invited to this room",
+        });
 
         console.log(
-          `${user.name} left room ${roomId}`
+          `${decoded.name} tried to access room ${roomId} without invitation`
         );
+
+        return;
       }
-    );
 
-    // =========================
-    // DISCONNECT
-    // =========================
+      socket.join(roomId);
 
-    socket.on(
-      "disconnect",
-      () => {
-        const user =
-          users[socket.id];
+      users[socket.id] = {
+        userId: decoded.id,
+        roomId,
+        name:
+          decoded.name || name,
+        email: decoded.email,
+        x: 0,
+        y: 0,
+      };
 
-        if (user) {
+      console.log(
+        `${decoded.name} joined room ${roomId}`
+      );
+
+      socket.emit("room-joined", {
+        roomId,
+        user: {
+          id: decoded.id,
+          name: decoded.name,
+          email: decoded.email,
+        },
+      });
+
+      socket
+        .to(roomId)
+        .emit("user-joined", {
+          id: socket.id,
+          userId: decoded.id,
+          name: decoded.name,
+          email: decoded.email,
+        });
+    } catch (error) {
+      socket.emit("auth-error", {
+        message:
+          "Invalid or expired token",
+      });
+
+      console.log(
+        "Unauthorized room join attempt"
+      );
+    }
+  });
+
+  socket.on(
+    "whiteboard-object",
+    (data) => {
+      const user =
+        users[socket.id];
+
+      if (!user) {
+        return;
+      }
+
+      if (
+        !data ||
+        typeof data !== "object"
+      ) {
+        return;
+      }
+
+      if (
+        !data.type ||
+        !data.object
+      ) {
+        return;
+      }
+
+      recordHistory(user.roomId, {
+        type: data.type,
+        object: data.object,
+      });
+
+      socket
+        .to(user.roomId)
+        .emit(
+          "whiteboard-object",
+          data
+        );
+    }
+  );
+
+  socket.on(
+    "clear-whiteboard",
+    (data) => {
+      const user =
+        users[socket.id];
+
+      if (!user) {
+        return;
+      }
+
+      let roomId = null;
+
+      if (typeof data === "string") {
+        roomId = data;
+      } else if (
+        data &&
+        typeof data.roomId === "string"
+      ) {
+        roomId = data.roomId;
+      }
+
+      if (!roomId) {
+        return;
+      }
+
+      if (user.roomId !== roomId) {
+        return;
+      }
+
+      recordHistory(roomId, {
+        type: "clear",
+      });
+
+      socket
+        .to(roomId)
+        .emit("clear-whiteboard");
+    }
+  );
+
+  socket.on(
+    "code-update",
+    (data) => {
+      const user =
+        users[socket.id];
+
+      if (!user) {
+        return;
+      }
+
+      if (
+        !data ||
+        typeof data !== "object"
+      ) {
+        return;
+      }
+
+      if (
+        typeof data.code !== "string"
+      ) {
+        return;
+      }
+
+      recordHistory(user.roomId, {
+        type: "code",
+        code: data.code,
+      });
+
+      socket
+        .to(user.roomId)
+        .emit(
+          "code-update",
+          data.code
+        );
+    }
+  );
+
+  socket.on(
+    "cursor-move",
+    (data) => {
+      const user =
+        users[socket.id];
+
+      if (!user) {
+        return;
+      }
+
+      if (
+        !data ||
+        typeof data !== "object"
+      ) {
+        return;
+      }
+
+      if (
+        typeof data.x !== "number" ||
+        typeof data.y !== "number"
+      ) {
+        return;
+      }
+
+      user.x = data.x;
+      user.y = data.y;
+
+      socket
+        .to(user.roomId)
+        .emit("cursor-move", {
+          id: socket.id,
+          userId: user.userId,
+          name: user.name,
+          x: data.x,
+          y: data.y,
+        });
+    }
+  );
+
+  socket.on(
+    "leave-room",
+    (data) => {
+      const user =
+        users[socket.id];
+
+      if (!user) {
+        return;
+      }
+
+      let roomId = null;
+
+      if (typeof data === "string") {
+        roomId = data.trim();
+      } else if (
+        data &&
+        typeof data.roomId === "string"
+      ) {
+        roomId = data.roomId.trim();
+      }
+
+      if (!roomId) {
+        roomId = user.roomId;
+      }
+
+      if (
+        roomId !== user.roomId
+      ) {
+        return;
+      }
+
+      socket.leave(roomId);
+
+      socket
+        .to(roomId)
+        .emit(
+          "user-left",
+          socket.id
+        );
+
+      console.log(
+        `${user.name} left room ${roomId}`
+      );
+
+      delete users[socket.id];
+    }
+  );
+
+  socket.on(
+    "disconnect",
+    () => {
+      const user =
+        users[socket.id];
+
+      if (user) {
+        const roomId =
+          user.roomId;
+
+        if (roomId) {
           socket
-            .to(user.roomId)
+            .to(roomId)
             .emit(
               "user-left",
               socket.id
             );
-
-          delete users[
-            socket.id
-          ];
         }
 
-        console.log(
-          "User disconnected:",
-          socket.id
-        );
+        delete users[socket.id];
       }
-    );
-  }
-);
 
-// =========================
-// HOME ROUTE
-// =========================
-
-app.get("/", (req, res) => {
-  res.send(
-    "SyncSpace server is running!"
+      console.log(
+        "User disconnected:",
+        socket.id
+      );
+    }
   );
 });
 
-// =========================
-// START SERVER
-// =========================
-
-const PORT = 3001;
-
-server.listen(
-  PORT,
-  () => {
-    console.log(
-      `SyncSpace server running on http://localhost:${PORT}`
-    );
-  }
-);
+server.listen(PORT, () => {
+  console.log(
+    `SyncSpace server running on http://localhost:${PORT}`
+  );
+});
