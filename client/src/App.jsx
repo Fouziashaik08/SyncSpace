@@ -9,38 +9,49 @@ import {
   Group,
 } from "react-konva";
 import Login from "./Login";
+import CodeEditor from "./CodeEditor";
 
-const socket = io("http://localhost:3001");
+const socket = io("http://localhost:3001", {
+  autoConnect: false,
+});
 
 function App() {
   const [user, setUser] = useState(() => {
     const savedUser = localStorage.getItem("syncspace_user");
+
     return savedUser ? JSON.parse(savedUser) : null;
   });
 
   const [roomId, setRoomId] = useState("");
   const [joinRoomId, setJoinRoomId] = useState("");
   const [name, setName] = useState("");
+
   const [message, setMessage] = useState("");
   const [inRoom, setInRoom] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
 
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteMessage, setInviteMessage] = useState("");
+
   const [invitations, setInvitations] = useState([]);
+  const [invitationLoading, setInvitationLoading] = useState(false);
 
   const [tool, setTool] = useState("freehand");
+
   const [lines, setLines] = useState([]);
   const [rectangles, setRectangles] = useState([]);
   const [texts, setTexts] = useState([]);
+
   const [code, setCode] = useState("");
+  const [language, setLanguage] = useState("javascript");
 
   const [cursors, setCursors] = useState({});
+  const [roomUsers, setRoomUsers] = useState([]);
+  const [typingUsers, setTypingUsers] = useState({});
+  const typingTimer = useRef(null);
+
   const [isDrawing, setIsDrawing] = useState(false);
   const [lastPoint, setLastPoint] = useState(null);
-
-  const [canvasWidth, setCanvasWidth] = useState(800);
-  const canvasContainerRef = useRef(null);
 
   const [isReplayMode, setIsReplayMode] = useState(false);
   const [history, setHistory] = useState([]);
@@ -52,39 +63,64 @@ function App() {
   const liveSnapshot = useRef(null);
   const replayTimer = useRef(null);
 
-  const token = localStorage.getItem("syncspace_token");
+  const handleLogin = (loggedInUser) => {
+    setUser(loggedInUser);
+    setName(loggedInUser.name);
+    setMessage("Login successful!");
+    const currentToken = localStorage.getItem("syncspace_token");
+    if (currentToken) {
+      socket.auth = { token: currentToken };
+      if (!socket.connected) socket.connect();
+    }
+  };
+
+  const handleLogout = () => {
+    if (inRoom) {
+      socket.emit("leave-room", roomId);
+    }
+
+    localStorage.removeItem("syncspace_token");
+    localStorage.removeItem("syncspace_user");
+
+    setUser(null);
+    setRoomId("");
+    setJoinRoomId("");
+    setName("");
+    setInRoom(false);
+    setIsOwner(false);
+
+    setMessage("");
+    setInviteEmail("");
+    setInviteMessage("");
+    setInvitations([]);
+
+    setLines([]);
+    setRectangles([]);
+    setTexts([]);
+    setCode("");
+    setLanguage("javascript");
+    setCursors({});
+    setRoomUsers([]);
+    setTypingUsers({});
+
+    if (typingTimer.current) {
+      clearTimeout(typingTimer.current);
+      typingTimer.current = null;
+    }
+
+    setIsReplayMode(false);
+    setHistory([]);
+    setReplayIndex(-1);
+    setIsPlaying(false);
+  };
 
   useEffect(() => {
-    if (user) {
-      setName(user.name || "");
+    const currentToken = localStorage.getItem("syncspace_token");
+    if (user && currentToken) {
+      socket.auth = { token: currentToken };
+      if (!socket.connected) socket.connect();
     }
   }, [user]);
-
-  useEffect(() => {
-    const updateCanvasSize = () => {
-      if (canvasContainerRef.current) {
-        const width = canvasContainerRef.current.clientWidth;
-        setCanvasWidth(Math.max(400, width));
-      }
-    };
-
-    updateCanvasSize();
-
-    const observer = new ResizeObserver(() => {
-      updateCanvasSize();
-    });
-
-    if (canvasContainerRef.current) {
-      observer.observe(canvasContainerRef.current);
-    }
-
-    window.addEventListener("resize", updateCanvasSize);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", updateCanvasSize);
-    };
-  }, [inRoom]);
 
   useEffect(() => {
     const handleWhiteboardObject = (data) => {
@@ -113,6 +149,37 @@ function App() {
       setLines([]);
       setRectangles([]);
       setTexts([]);
+    };
+
+    const handleLanguageUpdate = (newLanguage) => {
+      if (isReplayMode) return;
+      setLanguage(newLanguage);
+    };
+
+    const handleRoomUsers = (usersList) => {
+      setRoomUsers(Array.isArray(usersList) ? usersList : []);
+    };
+
+    const handleUserJoined = (newUser) => {
+      if (!newUser) return;
+      setRoomUsers((prev) => {
+        const exists = prev.some((item) => item.socketId === newUser.socketId);
+        if (exists) return prev;
+        return [...prev, newUser];
+      });
+    };
+
+    const handleUserTyping = (data) => {
+      if (!data || !data.id) return;
+      setTypingUsers((prev) => {
+        const updated = { ...prev };
+        if (data.typing) {
+          updated[data.id] = { name: data.name };
+        } else {
+          delete updated[data.id];
+        }
+        return updated;
+      });
     };
 
     const handleCodeUpdate = (newCode) => {
@@ -144,6 +211,16 @@ function App() {
         delete updated[userId];
         return updated;
       });
+
+      setRoomUsers((prev) =>
+        prev.filter((roomUser) => roomUser.socketId !== userId)
+      );
+
+      setTypingUsers((prev) => {
+        const updated = { ...prev };
+        delete updated[userId];
+        return updated;
+      });
     };
 
     const handleRoomJoined = (data) => {
@@ -153,14 +230,18 @@ function App() {
     };
 
     const handleAuthError = (data) => {
-      setMessage(data.message || "Room access denied.");
       setInRoom(false);
+      setMessage(data.message || "Unable to join room.");
     };
 
     socket.on("whiteboard-object", handleWhiteboardObject);
     socket.on("clear-whiteboard", handleClearWhiteboard);
     socket.on("code-update", handleCodeUpdate);
+    socket.on("language-update", handleLanguageUpdate);
     socket.on("cursor-move", handleCursorMove);
+    socket.on("room-users", handleRoomUsers);
+    socket.on("user-joined", handleUserJoined);
+    socket.on("user-typing", handleUserTyping);
     socket.on("user-left", handleUserLeft);
     socket.on("room-joined", handleRoomJoined);
     socket.on("auth-error", handleAuthError);
@@ -169,7 +250,11 @@ function App() {
       socket.off("whiteboard-object", handleWhiteboardObject);
       socket.off("clear-whiteboard", handleClearWhiteboard);
       socket.off("code-update", handleCodeUpdate);
+      socket.off("language-update", handleLanguageUpdate);
       socket.off("cursor-move", handleCursorMove);
+      socket.off("room-users", handleRoomUsers);
+      socket.off("user-joined", handleUserJoined);
+      socket.off("user-typing", handleUserTyping);
       socket.off("user-left", handleUserLeft);
       socket.off("room-joined", handleRoomJoined);
       socket.off("auth-error", handleAuthError);
@@ -177,44 +262,15 @@ function App() {
   }, [isReplayMode]);
 
   useEffect(() => {
-    if (user) {
-      loadInvitations();
-    }
-  }, [user]);
-
-  const handleLogin = (loggedInUser) => {
-    setUser(loggedInUser);
-    setName(loggedInUser.name || "");
-    setMessage("Login successful!");
-  };
-
-  const handleLogout = () => {
-    if (inRoom) {
-      socket.emit("leave-room", roomId);
-    }
-
-    localStorage.removeItem("syncspace_token");
-    localStorage.removeItem("syncspace_user");
-
-    setUser(null);
-    setRoomId("");
-    setJoinRoomId("");
-    setInRoom(false);
-    setIsOwner(false);
-    setMessage("");
-    setInviteEmail("");
-    setInviteMessage("");
-    setInvitations([]);
-    setLines([]);
-    setRectangles([]);
-    setTexts([]);
-    setCode("");
-    setCursors({});
-    setIsReplayMode(false);
-    setHistory([]);
-    setReplayIndex(-1);
-    setIsPlaying(false);
-  };
+    return () => {
+      if (replayTimer.current) {
+        clearInterval(replayTimer.current);
+      }
+      if (typingTimer.current) {
+        clearTimeout(typingTimer.current);
+      }
+    };
+  }, []);
 
   const createRoom = async () => {
     const currentToken = localStorage.getItem("syncspace_token");
@@ -225,6 +281,8 @@ function App() {
     }
 
     try {
+      setMessage("Creating room...");
+
       const response = await fetch("http://localhost:3001/rooms", {
         method: "POST",
         headers: {
@@ -236,42 +294,51 @@ function App() {
       const data = await response.json();
 
       if (!response.ok) {
-        setMessage(data.message || "Unable to create room.");
+        setMessage(data.message || "Failed to create room.");
         return;
       }
 
       const newRoomId = data.roomId;
 
       setRoomId(newRoomId);
-      setInRoom(true);
       setIsOwner(true);
+
       setMessage(`Room created: ${newRoomId}`);
+
+      if (!socket.connected) {
+        socket.auth = { token: currentToken };
+        socket.connect();
+      }
 
       socket.emit("join-room", {
         roomId: newRoomId,
-        name: user.name,
+        name: user?.name || name.trim(),
         token: currentToken,
       });
     } catch (error) {
+      console.error("Create room error:", error);
       setMessage("Unable to connect to server.");
     }
   };
 
   const joinRoom = async () => {
     const currentToken = localStorage.getItem("syncspace_token");
-    const id = joinRoomId.trim();
 
     if (!currentToken) {
       setMessage("Please login first.");
       return;
     }
 
-    if (!id) {
+    if (!joinRoomId.trim()) {
       setMessage("Please enter a Room ID.");
       return;
     }
 
+    const id = joinRoomId.trim();
+
     try {
+      setMessage("Checking room access...");
+
       const response = await fetch(
         `http://localhost:3001/rooms/${id}/access`,
         {
@@ -290,92 +357,30 @@ function App() {
       }
 
       if (!data.hasAccess) {
-        setMessage("You are not invited to this room.");
+        setMessage(
+          "Access denied. You have not been invited to this room."
+        );
         return;
       }
 
       setRoomId(id);
-      setIsOwner(Boolean(data.isOwner));
-      setMessage("Joining room...");
+      setIsOwner(data.isOwner === true);
+
+      setMessage("Access approved. Joining room...");
+
+      if (!socket.connected) {
+        socket.auth = { token: currentToken };
+        socket.connect();
+      }
 
       socket.emit("join-room", {
         roomId: id,
-        name: user.name,
+        name: user?.name || name.trim(),
         token: currentToken,
       });
     } catch (error) {
+      console.error("Join room error:", error);
       setMessage("Unable to connect to server.");
-    }
-  };
-
-  const leaveRoom = () => {
-    if (replayTimer.current) {
-      clearInterval(replayTimer.current);
-      replayTimer.current = null;
-    }
-
-    socket.emit("leave-room", roomId);
-
-    setRoomId("");
-    setJoinRoomId("");
-    setInRoom(false);
-    setIsOwner(false);
-    setMessage("");
-    setInviteEmail("");
-    setInviteMessage("");
-    setLines([]);
-    setRectangles([]);
-    setTexts([]);
-    setCode("");
-    setCursors({});
-    setIsReplayMode(false);
-    setHistory([]);
-    setReplayIndex(-1);
-    setIsPlaying(false);
-    liveSnapshot.current = null;
-  };
-
-  const inviteUser = async () => {
-    const currentToken = localStorage.getItem("syncspace_token");
-
-    if (!currentToken) {
-      setInviteMessage("Please login first.");
-      return;
-    }
-
-    if (!inviteEmail.trim()) {
-      setInviteMessage("Please enter an email address.");
-      return;
-    }
-
-    try {
-      const response = await fetch(
-        `http://localhost:3001/rooms/${roomId}/invite`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${currentToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            email: inviteEmail.trim(),
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setInviteMessage(data.message || "Unable to invite user.");
-        return;
-      }
-
-      setInviteMessage(
-        `${data.invitedUser?.name || inviteEmail} invited successfully.`
-      );
-      setInviteEmail("");
-    } catch (error) {
-      setInviteMessage("Unable to connect to server.");
     }
   };
 
@@ -387,28 +392,44 @@ function App() {
     }
 
     try {
+      setInvitationLoading(true);
+
       const response = await fetch(
         "http://localhost:3001/invitations",
         {
+          method: "GET",
           headers: {
             Authorization: `Bearer ${currentToken}`,
           },
         }
       );
 
+      const data = await response.json();
+
       if (!response.ok) {
         return;
       }
 
-      const data = await response.json();
       setInvitations(data.invitations || []);
     } catch (error) {
-      setInvitations([]);
+      console.error("Invitation loading error:", error);
+    } finally {
+      setInvitationLoading(false);
     }
   };
 
+  useEffect(() => {
+    if (user) {
+      loadInvitations();
+    }
+  }, [user]);
+
   const acceptInvitation = async (invitationId) => {
     const currentToken = localStorage.getItem("syncspace_token");
+
+    if (!currentToken) {
+      return;
+    }
 
     try {
       const response = await fetch(
@@ -429,46 +450,35 @@ function App() {
         return;
       }
 
-      setInvitations((prev) =>
-        prev.filter((invitation) => invitation.id !== invitationId)
-      );
-
       const acceptedRoomId = data.roomId;
 
       setJoinRoomId(acceptedRoomId);
-      setMessage("Invitation accepted. Joining room...");
 
-      const accessResponse = await fetch(
-        `http://localhost:3001/rooms/${acceptedRoomId}/access`,
-        {
-          headers: {
-            Authorization: `Bearer ${currentToken}`,
-          },
-        }
+      setMessage(
+        `Invitation accepted. Joining room ${acceptedRoomId}...`
       );
 
-      const accessData = await accessResponse.json();
-
-      if (!accessResponse.ok || !accessData.hasAccess) {
-        setMessage("Invitation accepted, but room access could not be loaded.");
-        return;
-      }
-
-      setRoomId(acceptedRoomId);
-      setIsOwner(Boolean(accessData.isOwner));
+      setInvitations((prev) =>
+        prev.filter((item) => item.id !== invitationId)
+      );
 
       socket.emit("join-room", {
         roomId: acceptedRoomId,
-        name: user.name,
+        name: user?.name || name.trim(),
         token: currentToken,
       });
     } catch (error) {
+      console.error("Accept invitation error:", error);
       setMessage("Unable to connect to server.");
     }
   };
 
   const declineInvitation = async (invitationId) => {
     const currentToken = localStorage.getItem("syncspace_token");
+
+    if (!currentToken) {
+      return;
+    }
 
     try {
       const response = await fetch(
@@ -490,13 +500,105 @@ function App() {
       }
 
       setInvitations((prev) =>
-        prev.filter((invitation) => invitation.id !== invitationId)
+        prev.filter((item) => item.id !== invitationId)
       );
 
       setMessage("Invitation declined.");
     } catch (error) {
+      console.error("Decline invitation error:", error);
       setMessage("Unable to connect to server.");
     }
+  };
+
+  const inviteUser = async () => {
+    const currentToken = localStorage.getItem("syncspace_token");
+
+    if (!currentToken) {
+      setInviteMessage("Please login first.");
+      return;
+    }
+
+    if (!roomId) {
+      setInviteMessage("No room selected.");
+      return;
+    }
+
+    if (!inviteEmail.trim()) {
+      setInviteMessage("Please enter a user email.");
+      return;
+    }
+
+    try {
+      setInviteMessage("Sending invitation...");
+
+      const response = await fetch(
+        `http://localhost:3001/rooms/${roomId}/invite`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${currentToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            email: inviteEmail.trim(),
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setInviteMessage(data.message || "Failed to invite user.");
+        return;
+      }
+
+      setInviteMessage(
+        `${data.invitedUser.name} has been invited successfully.`
+      );
+
+      setInviteEmail("");
+    } catch (error) {
+      console.error("Invite error:", error);
+      setInviteMessage("Unable to connect to server.");
+    }
+  };
+
+  const leaveRoom = () => {
+    if (replayTimer.current) {
+      clearInterval(replayTimer.current);
+      replayTimer.current = null;
+    }
+
+    socket.emit("leave-room", roomId);
+
+    setRoomId("");
+    setJoinRoomId("");
+    setInRoom(false);
+    setIsOwner(false);
+
+    setMessage("");
+
+    setInviteEmail("");
+    setInviteMessage("");
+
+    setLines([]);
+    setRectangles([]);
+    setTexts([]);
+    setCode("");
+    setLanguage("javascript");
+    setCursors({});
+    setRoomUsers([]);
+    setTypingUsers({});
+
+    if (typingTimer.current) {
+      clearTimeout(typingTimer.current);
+      typingTimer.current = null;
+    }
+
+    setIsReplayMode(false);
+    setHistory([]);
+    setReplayIndex(-1);
+    setIsPlaying(false);
   };
 
   const handleMouseDown = (e) => {
@@ -506,6 +608,10 @@ function App() {
 
     const stage = e.target.getStage();
     const point = stage.getPointerPosition();
+
+    if (!point) {
+      return;
+    }
 
     setIsDrawing(true);
     setLastPoint(point);
@@ -520,6 +626,10 @@ function App() {
   const handleMouseMove = (e) => {
     const stage = e.target.getStage();
     const point = stage.getPointerPosition();
+
+    if (!point) {
+      return;
+    }
 
     if (inRoom && !isReplayMode) {
       socket.emit("cursor-move", {
@@ -554,10 +664,7 @@ function App() {
         ],
       };
 
-      return [
-        ...prev.slice(0, -1),
-        updatedLine,
-      ];
+      return [...prev.slice(0, -1), updatedLine];
     });
 
     setLastPoint(point);
@@ -601,10 +708,7 @@ function App() {
       strokeWidth: 3,
     };
 
-    setRectangles((prev) => [
-      ...prev,
-      newRectangle,
-    ]);
+    setRectangles((prev) => [...prev, newRectangle]);
 
     socket.emit("whiteboard-object", {
       roomId,
@@ -626,10 +730,7 @@ function App() {
       fill: "black",
     };
 
-    setTexts((prev) => [
-      ...prev,
-      newText,
-    ]);
+    setTexts((prev) => [...prev, newText]);
 
     socket.emit("whiteboard-object", {
       roomId,
@@ -650,12 +751,10 @@ function App() {
     socket.emit("clear-whiteboard", roomId);
   };
 
-  const handleCodeChange = (e) => {
+  const handleCodeChange = (newCode) => {
     if (isReplayMode) {
       return;
     }
-
-    const newCode = e.target.value;
 
     setCode(newCode);
 
@@ -665,11 +764,101 @@ function App() {
     });
   };
 
+  const handleTyping = () => {
+    if (isReplayMode || !inRoom) return;
+
+    socket.emit("typing", { typing: true });
+
+    if (typingTimer.current) {
+      clearTimeout(typingTimer.current);
+    }
+
+    typingTimer.current = setTimeout(() => {
+      socket.emit("typing", { typing: false });
+    }, 1000);
+  };
+
+  const loadReplayHistory = async () => {
+    const currentToken = localStorage.getItem("syncspace_token");
+
+    if (!currentToken) {
+      setReplayMessage("Please login first.");
+      return;
+    }
+
+    if (!roomId) {
+      setReplayMessage("No room selected.");
+      return;
+    }
+
+    try {
+      setReplayLoading(true);
+      setReplayMessage("Loading session history...");
+
+      const response = await fetch(
+        `http://localhost:3001/rooms/${roomId}/history`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${currentToken}`,
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setReplayMessage(
+          data.message || "Unable to load replay history."
+        );
+        return;
+      }
+
+      const loadedHistory = data.history || [];
+
+      if (loadedHistory.length === 0) {
+        setReplayMessage(
+          "No history recorded yet. Draw something or edit the code first."
+        );
+        return;
+      }
+
+      liveSnapshot.current = {
+        lines: [...lines],
+        rectangles: [...rectangles],
+        texts: [...texts],
+        code,
+        language,
+      };
+
+      setHistory(loadedHistory);
+      setIsReplayMode(true);
+      setIsPlaying(false);
+      setReplayIndex(-1);
+
+      setReplayMessage(
+        `Loaded ${loadedHistory.length} history events.`
+      );
+
+      setLines([]);
+      setRectangles([]);
+      setTexts([]);
+      setCode("");
+      setLanguage("javascript");
+    } catch (error) {
+      console.error("Replay history error:", error);
+      setReplayMessage("Unable to connect to server.");
+    } finally {
+      setReplayLoading(false);
+    }
+  };
+
   const buildReplayState = (events, targetIndex) => {
     let replayLines = [];
     let replayRectangles = [];
     let replayTexts = [];
     let replayCode = "";
+    let replayLanguage = "javascript";
 
     if (targetIndex < 0) {
       return {
@@ -677,6 +866,7 @@ function App() {
         rectangles: [],
         texts: [],
         code: "",
+        language: "javascript",
       };
     }
 
@@ -717,6 +907,10 @@ function App() {
       if (event.type === "code") {
         replayCode = event.code || "";
       }
+
+      if (event.type === "language") {
+        replayLanguage = event.language || "javascript";
+      }
     }
 
     return {
@@ -724,6 +918,7 @@ function App() {
       rectangles: replayRectangles,
       texts: replayTexts,
       code: replayCode,
+      language: replayLanguage,
     };
   };
 
@@ -749,87 +944,17 @@ function App() {
     setCode(state.code);
   };
 
-  const loadReplayHistory = async () => {
-    const currentToken =
-      localStorage.getItem("syncspace_token");
-
-    if (!currentToken) {
-      setReplayMessage("Please login first.");
-      return;
-    }
-
-    if (!roomId) {
-      setReplayMessage("No room selected.");
-      return;
-    }
-
-    try {
-      setReplayLoading(true);
-      setReplayMessage("Loading session history...");
-
-      const response = await fetch(
-        `http://localhost:3001/rooms/${roomId}/history`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${currentToken}`,
-          },
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setReplayMessage(
-          data.message ||
-            "Unable to load replay history."
-        );
-        return;
-      }
-
-      const loadedHistory =
-        data.history || [];
-
-      if (!loadedHistory.length) {
-        setReplayMessage(
-          "No history recorded yet. Draw something or edit the code first."
-        );
-        return;
-      }
-
-      liveSnapshot.current = {
-        lines: [...lines],
-        rectangles: [...rectangles],
-        texts: [...texts],
-        code,
-      };
-
-      setHistory(loadedHistory);
-      setIsReplayMode(true);
-      setIsPlaying(false);
-      setReplayIndex(-1);
-
-      setLines([]);
-      setRectangles([]);
-      setTexts([]);
-      setCode("");
-
-      setReplayMessage(
-        `Loaded ${loadedHistory.length} history events.`
-      );
-    } catch (error) {
-      setReplayMessage(
-        "Unable to connect to server."
-      );
-    } finally {
-      setReplayLoading(false);
-    }
-  };
-
   const handleReplaySlider = (e) => {
-    showReplayPosition(
-      Number(e.target.value)
-    );
+    const index = Number(e.target.value);
+
+    setIsPlaying(false);
+
+    if (replayTimer.current) {
+      clearInterval(replayTimer.current);
+      replayTimer.current = null;
+    }
+
+    showReplayPosition(index);
   };
 
   const toggleReplayPlay = () => {
@@ -864,8 +989,11 @@ function App() {
 
         if (nextIndex >= history.length) {
           clearInterval(replayTimer.current);
+
           replayTimer.current = null;
+
           setIsPlaying(false);
+
           return currentIndex;
         }
 
@@ -878,6 +1006,7 @@ function App() {
         setRectangles(state.rectangles);
         setTexts(state.texts);
         setCode(state.code);
+        setLanguage(state.language);
 
         return nextIndex;
       });
@@ -894,27 +1023,29 @@ function App() {
 
     if (liveSnapshot.current) {
       setLines(liveSnapshot.current.lines);
-      setRectangles(
-        liveSnapshot.current.rectangles
-      );
+      setRectangles(liveSnapshot.current.rectangles);
       setTexts(liveSnapshot.current.texts);
       setCode(liveSnapshot.current.code);
+      setLanguage(liveSnapshot.current.language || "javascript");
     }
 
     setIsReplayMode(false);
     setHistory([]);
     setReplayIndex(-1);
     setReplayMessage("");
+
     liveSnapshot.current = null;
   };
 
   const formatReplayTime = (timestamp) => {
-    if (!timestamp || !history.length) {
+    if (!timestamp) {
       return "00:00";
     }
 
     const firstTimestamp =
-      history[0].timestamp;
+      history.length > 0
+        ? history[0].timestamp
+        : timestamp;
 
     const seconds = Math.max(
       0,
@@ -923,38 +1054,31 @@ function App() {
       )
     );
 
-    const minutes = Math.floor(
-      seconds / 60
-    );
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
 
-    const remainingSeconds =
-      seconds % 60;
-
-    return `${String(minutes).padStart(
-      2,
-      "0"
-    )}:${String(remainingSeconds).padStart(
-      2,
-      "0"
-    )}`;
+    return `${String(minutes).padStart(2, "0")}:${String(
+      remainingSeconds
+    ).padStart(2, "0")}`;
   };
 
   if (!user) {
     return (
-      <div className="app-shell">
-        <div className="auth-page">
-          <div className="auth-brand">
+      <div className="auth-page">
+        <header className="topbar">
+          <div className="brand">
             <div className="brand-mark">S</div>
+
             <div>
               <h1>SyncSpace</h1>
               <p>
-                Real-time collaborative workspace
+                Real-Time Collaborative Workspace
               </p>
             </div>
           </div>
+        </header>
 
-          <Login onLogin={handleLogin} />
-        </div>
+        <Login onLogin={handleLogin} />
       </div>
     );
   }
@@ -965,33 +1089,25 @@ function App() {
         <div className="brand">
           <div className="brand-mark">S</div>
 
-          <div className="brand-copy">
-            <strong>SyncSpace</strong>
-            <span>Collaborative Workspace</span>
+          <div>
+            <h1>SyncSpace</h1>
+            <p>Collaborative Workspace</p>
           </div>
         </div>
 
-        {inRoom && (
-          <div className="topbar-center">
+        <div className="topbar-center">
+          {inRoom && (
             <div className="room-pill">
-              <span className="room-dot" />
-              Room {roomId}
+              Room: {roomId}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className="user-menu">
-          <div className="user-avatar">
-            {user.name?.charAt(0)?.toUpperCase()}
-          </div>
-
-          <div className="user-details">
-            <strong>{user.name}</strong>
-            <span>{user.email}</span>
-          </div>
+          <span>{user.name}</span>
 
           <button
-            className="button ghost"
+            className="button secondary"
             onClick={handleLogout}
             disabled={isReplayMode}
           >
@@ -1003,34 +1119,31 @@ function App() {
       {!inRoom ? (
         <main className="home-page">
           <section className="hero-card">
-            <div className="hero-content">
-              <div className="eyebrow">
-                REAL-TIME COLLABORATION
-              </div>
+            <div>
+              <span className="eyebrow">
+                REAL-TIME DEVELOPMENT
+              </span>
 
-              <h1>
-                Build together,
+              <h2>
+                Build together.
                 <br />
-                in the same space.
-              </h1>
+                Think together.
+              </h2>
 
               <p>
-                Collaborate on diagrams, code and ideas
-                with your team in real time.
+                Collaborate on code and ideas in one
+                shared workspace.
               </p>
-            </div>
-
-            <div className="hero-orb">
-              <span>✦</span>
             </div>
           </section>
 
-          <section className="home-grid">
-            <div className="panel action-panel">
+          <div className="home-grid">
+            <section className="panel action-panel">
               <div className="panel-heading">
-                <div className="panel-icon">＋</div>
+                <div className="panel-icon">+</div>
+
                 <div>
-                  <h2>Create a workspace</h2>
+                  <h3>Create Workspace</h3>
                   <p>
                     Start a new collaborative room.
                   </p>
@@ -1038,73 +1151,67 @@ function App() {
               </div>
 
               <button
-                className="button primary large"
+                className="button primary"
                 onClick={createRoom}
               >
-                Create Room
+                Create New Room
               </button>
-            </div>
+            </section>
 
-            <div className="panel action-panel">
+            <section className="panel action-panel">
               <div className="panel-heading">
                 <div className="panel-icon">↗</div>
+
                 <div>
-                  <h2>Join a workspace</h2>
+                  <h3>Join Workspace</h3>
                   <p>
-                    Enter a room ID to continue.
+                    Enter a room ID you have access to.
                   </p>
                 </div>
               </div>
 
               <div className="input-row">
                 <input
+                  className="input"
+                  type="text"
+                  placeholder="Enter Room ID"
                   value={joinRoomId}
                   onChange={(e) =>
                     setJoinRoomId(e.target.value)
                   }
-                  placeholder="Enter Room ID"
                 />
 
                 <button
-                  className="button secondary"
+                  className="button primary"
                   onClick={joinRoom}
                 >
                   Join
                 </button>
               </div>
-            </div>
-          </section>
+            </section>
+          </div>
 
           <section className="panel invitations-panel">
             <div className="section-heading">
               <div>
-                <h2>📩 Invitations</h2>
+                <h3>Invitations</h3>
                 <p>
-                  Rooms you've been invited to join.
+                  Rooms shared with your account.
                 </p>
               </div>
 
-              <div className="section-heading-actions">
-                <span className="count-badge">
-                  {invitations.length}
-                </span>
-
-                <button
-                  className="button ghost"
-                  onClick={loadInvitations}
-                >
-                  Refresh
-                </button>
-              </div>
+              <span className="count-badge">
+                {invitations.length}
+              </span>
             </div>
 
-            {invitations.length === 0 ? (
+            {invitationLoading ? (
               <div className="empty-state">
-                <div className="empty-icon">✉</div>
-                <strong>No pending invitations</strong>
-                <span>
-                  New workspace invitations will appear here.
-                </span>
+                Loading invitations...
+              </div>
+            ) : invitations.length === 0 ? (
+              <div className="empty-state">
+                No pending invitations.
               </div>
             ) : (
               <div className="invitation-list">
@@ -1114,23 +1221,24 @@ function App() {
                     key={invitation.id}
                   >
                     <div className="invitation-avatar">
-                      {invitation.senderName
-                        ?.charAt(0)
-                        ?.toUpperCase()}
+                      {(
+                        invitation.fromUser?.name ||
+                        "U"
+                      )
+                        .charAt(0)
+                        .toUpperCase()}
                     </div>
 
                     <div className="invitation-info">
                       <strong>
-                        {invitation.senderName}
+                        {invitation.fromUser?.name ||
+                          "User"}
                       </strong>
 
                       <span>
-                        {invitation.senderEmail}
+                        invited you to room{" "}
+                        <b>{invitation.roomId}</b>
                       </span>
-
-                      <small>
-                        Room: {invitation.roomId}
-                      </small>
                     </div>
 
                     <div className="invitation-actions">
@@ -1146,7 +1254,7 @@ function App() {
                       </button>
 
                       <button
-                        className="button danger-outline"
+                        className="button secondary"
                         onClick={() =>
                           declineInvitation(
                             invitation.id
@@ -1163,7 +1271,7 @@ function App() {
           </section>
 
           {message && (
-            <div className="global-message">
+            <div className="notice">
               {message}
             </div>
           )}
@@ -1171,20 +1279,23 @@ function App() {
       ) : (
         <main className="workspace-page">
           <div className="workspace-toolbar">
-            <div className="workspace-title">
-              <div className="workspace-icon">✦</div>
+            <div>
+              <span className="eyebrow">
+                COLLABORATIVE ROOM
+              </span>
 
-              <div>
-                <span>WORKSPACE</span>
-                <h1>Room {roomId}</h1>
-              </div>
+              <h2>Workspace</h2>
+
+              <span className="workspace-title">
+                Room ID: {roomId}
+              </span>
             </div>
 
             <div className="toolbar-actions">
-              <div className="online-pill">
-                <span className="online-dot" />
-                Live collaboration
-              </div>
+              <span className="online-pill">
+                <span className="online-dot"></span>
+                Live
+              </span>
 
               <button
                 className="button secondary"
@@ -1194,10 +1305,9 @@ function App() {
                   replayLoading
                 }
               >
-                📜{" "}
                 {replayLoading
                   ? "Loading..."
-                  : "Replay Session"}
+                  : "📜 Replay History"}
               </button>
 
               <button
@@ -1211,25 +1321,25 @@ function App() {
           </div>
 
           {isReplayMode && (
-            <section className="replay-panel">
+            <section className="panel replay-panel">
               <div className="replay-header">
                 <div>
-                  <div className="replay-badge">
-                    ● REPLAY MODE
-                  </div>
+                  <span className="replay-badge">
+                    REPLAY MODE
+                  </span>
 
-                  <h2>
-                    Session history
-                  </h2>
+                  <h3>
+                    Previous Workspace Session
+                  </h3>
 
                   <p>
-                    Viewing a previous state of
-                    the workspace.
+                    Live collaboration is paused while
+                    viewing history.
                   </p>
                 </div>
 
                 <button
-                  className="button danger"
+                  className="button secondary"
                   onClick={exitReplay}
                 >
                   Exit Replay
@@ -1241,7 +1351,10 @@ function App() {
                   <span>
                     Event{" "}
                     <strong>
-                      {replayIndex + 1}
+                      {Math.max(
+                        0,
+                        replayIndex + 1
+                      )}
                     </strong>{" "}
                     / {history.length}
                   </span>
@@ -1266,25 +1379,12 @@ function App() {
                     history.length - 1
                   )}
                   value={replayIndex}
-                  onChange={
-                    handleReplaySlider
-                  }
+                  onChange={handleReplaySlider}
                 />
 
                 <div className="replay-controls">
                   <button
                     className="button secondary"
-                    onClick={
-                      toggleReplayPlay
-                    }
-                  >
-                    {isPlaying
-                      ? "⏸ Pause"
-                      : "▶ Play"}
-                  </button>
-
-                  <button
-                    className="button ghost"
                     onClick={() =>
                       showReplayPosition(-1)
                     }
@@ -1293,7 +1393,7 @@ function App() {
                   </button>
 
                   <button
-                    className="button ghost"
+                    className="button secondary"
                     onClick={() =>
                       showReplayPosition(
                         replayIndex - 1
@@ -1307,7 +1407,18 @@ function App() {
                   </button>
 
                   <button
-                    className="button ghost"
+                    className="button primary"
+                    onClick={
+                      toggleReplayPlay
+                    }
+                  >
+                    {isPlaying
+                      ? "⏸ Pause"
+                      : "▶ Play"}
+                  </button>
+
+                  <button
+                    className="button secondary"
                     onClick={() =>
                       showReplayPosition(
                         replayIndex + 1
@@ -1332,20 +1443,17 @@ function App() {
           )}
 
           <div className="workspace-layout">
-            <div className="workspace-main">
-              <section className="editor-card">
+            <section className="workspace-main">
+              <div className="editor-card">
                 <div className="editor-header">
-                  <div className="editor-title">
-                    <div className="editor-icon">
+                  <div>
+                    <span className="editor-icon">
                       ✎
-                    </div>
+                    </span>
 
-                    <div>
-                      <h2>Whiteboard</h2>
-                      <span>
-                        Shared visual workspace
-                      </span>
-                    </div>
+                    <strong>
+                      Whiteboard
+                    </strong>
                   </div>
 
                   <div className="tool-group">
@@ -1362,36 +1470,22 @@ function App() {
                         isReplayMode
                       }
                     >
-                      ✎ Freehand
+                      ✏ Freehand
                     </button>
 
                     <button
-                      className={`tool-button ${
-                        tool === "rectangle"
-                          ? "active"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        setTool("rectangle");
-                        addRectangle();
-                      }}
+                      className="tool-button"
+                      onClick={addRectangle}
                       disabled={
                         isReplayMode
                       }
                     >
-                      ▫ Rectangle
+                      ▭ Rectangle
                     </button>
 
                     <button
-                      className={`tool-button ${
-                        tool === "text"
-                          ? "active"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        setTool("text");
-                        addText();
-                      }}
+                      className="tool-button"
+                      onClick={addText}
                       disabled={
                         isReplayMode
                       }
@@ -1413,12 +1507,9 @@ function App() {
                   </div>
                 </div>
 
-                <div
-                  ref={canvasContainerRef}
-                  className="canvas-container"
-                >
+                <div className="canvas-container">
                   <Stage
-                    width={canvasWidth}
+                    width={900}
                     height={500}
                     onMouseDown={
                       handleMouseDown
@@ -1429,6 +1520,9 @@ function App() {
                     onMouseup={
                       handleMouseUp
                     }
+                    style={{
+                      background: "#ffffff",
+                    }}
                   >
                     <Layer>
                       {lines.map(
@@ -1474,25 +1568,25 @@ function App() {
                           ]) => (
                             <Group
                               key={id}
-                              x={cursor.x}
-                              y={cursor.y}
+                              x={
+                                cursor.x
+                              }
+                              y={
+                                cursor.y
+                              }
                             >
                               <Text
-                                text="▼"
-                                fontSize={18}
+                                text={`👤 ${cursor.name}`}
+                                fontSize={14}
                                 fill="blue"
-                                offsetX={6}
-                                offsetY={-2}
+                                padding={4}
                               />
 
                               <Text
-                                text={
-                                  cursor.name
-                                }
+                                text="▼"
+                                y={18}
                                 fontSize={16}
                                 fill="blue"
-                                x={12}
-                                y={-4}
                               />
                             </Group>
                           )
@@ -1500,106 +1594,91 @@ function App() {
                     </Layer>
                   </Stage>
                 </div>
-              </section>
+              </div>
 
-              <section className="editor-card code-card">
-                <div className="editor-header">
-                  <div className="editor-title">
-                    <div className="editor-icon">
-                      {"</>"}
-                    </div>
+              <div className="code-card">
+                <div className="code-status">
+                  <span>
+                    {isReplayMode
+                      ? "Replay snapshot"
+                      : "Live collaborative editor"}
+                  </span>
 
-                    <div>
-                      <h2>Code Editor</h2>
-                      <span>
-                        Shared source code
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="code-status">
-                    <span className="online-dot" />
-                    Synced
-                  </div>
+                  <span>
+                    {isReplayMode
+                      ? "Read only"
+                      : "Connected"}
+                  </span>
                 </div>
 
-                <div className="code-editor-wrap">
-                  <div className="line-numbers">
-                    {code
-                      .split("\n")
-                      .map(
-                        (_, index) => (
-                          <span
-                            key={index}
-                          >
-                            {index + 1}
-                          </span>
-                        )
-                      )}
-                  </div>
-
-                  <textarea
-                    className="code-textarea"
-                    placeholder="// Start writing code together..."
-                    value={code}
-                    onChange={
-                      handleCodeChange
-                    }
-                    readOnly={
-                      isReplayMode
-                    }
-                    spellCheck="false"
-                  />
-                </div>
-
-                {isReplayMode && (
-                  <div className="editor-lock">
-                    🔒 Code editing is disabled
-                    during replay.
+                {Object.keys(typingUsers).length > 0 && (
+                  <div className="typing-indicator">
+                    <span className="typing-dots">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </span>
+                    {Object.values(typingUsers)
+                      .map((typingUser) => `${typingUser.name} is typing...`)
+                      .join(" ")}
                   </div>
                 )}
-              </section>
-            </div>
+
+                <CodeEditor
+                  code={code}
+                  setCode={setCode}
+                  language={language}
+                  setLanguage={(nextLanguage) => {
+                    if (isReplayMode) return;
+                    setLanguage(nextLanguage);
+                    socket.emit("language-update", {
+                      roomId,
+                      language: nextLanguage,
+                    });
+                  }}
+                  onCodeChange={
+                    handleCodeChange
+                  }
+                  onTyping={handleTyping}
+                  readOnly={
+                    isReplayMode
+                  }
+                />
+              </div>
+            </section>
 
             <aside className="sidebar">
               {isOwner && (
                 <section className="side-panel">
                   <div className="side-panel-header">
-                    <div>
-                      <h3>
-                        Invite collaborator
-                      </h3>
-                      <span>
-                        Add a team member
-                      </span>
-                    </div>
+                    <h3>Invite Collaborator</h3>
+                    <span>OWNER</span>
                   </div>
 
-                  <div className="invite-form">
-                    <input
-                      type="email"
-                      placeholder="Email address"
-                      value={inviteEmail}
-                      onChange={(e) =>
-                        setInviteEmail(
-                          e.target.value
-                        )
-                      }
-                      disabled={
-                        isReplayMode
-                      }
-                    />
+                  <input
+                    className="input"
+                    type="email"
+                    placeholder="user@example.com"
+                    value={inviteEmail}
+                    onChange={(e) =>
+                      setInviteEmail(
+                        e.target.value
+                      )
+                    }
+                    disabled={
+                      isReplayMode
+                    }
+                  />
 
-                    <button
-                      className="button primary"
-                      onClick={inviteUser}
-                      disabled={
-                        isReplayMode
-                      }
-                    >
-                      Invite
-                    </button>
-                  </div>
+                  <button
+                    className="button primary full-width"
+                    onClick={inviteUser}
+                    disabled={
+                      isReplayMode
+                    }
+                  >
+                    Send Invitation
+                  </button>
 
                   {inviteMessage && (
                     <div className="notice">
@@ -1611,105 +1690,86 @@ function App() {
 
               <section className="side-panel">
                 <div className="side-panel-header">
-                  <div>
-                    <h3>
-                      Collaborators
-                    </h3>
-                    <span>
-                      People currently drawing
-                    </span>
-                  </div>
-
-                  <span className="count-badge">
-                    {Object.keys(
-                      cursors
-                    ).length + 1}
-                  </span>
+                  <h3>Collaborators</h3>
+                  <span>{roomUsers.length}</span>
                 </div>
 
                 <div className="collaborator-list">
-                  <div className="collaborator">
-                    <div className="collaborator-avatar">
-                      {user.name
-                        ?.charAt(0)
-                        ?.toUpperCase()}
+                  {roomUsers.length === 0 ? (
+                    <div className="empty-state">
+                      No collaborators yet.
                     </div>
-
-                    <div>
-                      <strong>
-                        {user.name}
-                      </strong>
-                      <span>
-                        You ·{" "}
-                        {isOwner
-                          ? "Owner"
-                          : "Member"}
-                      </span>
-                    </div>
-
-                    <span className="online-dot" />
-                  </div>
-
-                  {Object.entries(
-                    cursors
-                  ).map(
-                    ([id, cursor]) => (
+                  ) : (
+                    roomUsers.map((roomUser) => (
                       <div
-                        className="collaborator"
-                        key={id}
+                        className="collaborator-item"
+                        key={roomUser.socketId}
                       >
                         <div className="collaborator-avatar">
-                          {cursor.name
-                            ?.charAt(0)
-                            ?.toUpperCase()}
+                          {(roomUser.name || "U").charAt(0).toUpperCase()}
                         </div>
 
-                        <div>
-                          <strong>
-                            {cursor.name}
-                          </strong>
+                        <div className="collaborator-info">
+                          <strong>{roomUser.name}</strong>
                           <span>
-                            Collaborator
+                            {roomUser.id === user.id ? "You" : "Online"}
                           </span>
                         </div>
 
-                        <span className="online-dot" />
+                        <span className="online-dot"></span>
                       </div>
-                    )
+                    ))
                   )}
                 </div>
               </section>
 
-              <section className="side-panel room-info-panel">
+              <section className="side-panel">
                 <div className="side-panel-header">
-                  <div>
-                    <h3>Room details</h3>
-                    <span>
-                      Workspace information
-                    </span>
-                  </div>
+                  <h3>Room Info</h3>
                 </div>
 
                 <div className="room-detail">
                   <span>Room ID</span>
+                  <strong>{roomId}</strong>
+                </div>
+
+                <div className="room-detail">
+                  <span>Your Role</span>
                   <strong>
-                    {roomId}
+                    {isOwner
+                      ? "Owner"
+                      : "Collaborator"}
                   </strong>
                 </div>
 
                 <div className="room-detail">
-                  <span>Your role</span>
+                  <span>Editor</span>
                   <strong>
-                    {isOwner
-                      ? "Owner"
-                      : "Member"}
+                    Monaco
                   </strong>
+                </div>
+              </section>
+
+              <section className="side-panel">
+                <div className="side-panel-header">
+                  <h3>Session</h3>
                 </div>
 
                 <div className="room-detail">
                   <span>Status</span>
+
                   <strong>
-                    Live
+                    {isReplayMode
+                      ? "Replay"
+                      : "Live"}
+                  </strong>
+                </div>
+
+                <div className="room-detail">
+                  <span>Language</span>
+
+                  <strong>
+                    {language}
                   </strong>
                 </div>
               </section>

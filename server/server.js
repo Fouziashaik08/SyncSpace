@@ -54,6 +54,7 @@ const io = new Server(server, {
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
+
   const token =
     authHeader && authHeader.startsWith("Bearer ")
       ? authHeader.split(" ")[1]
@@ -109,8 +110,6 @@ function recordHistory(roomId, event) {
     ...event,
     timestamp: Date.now(),
   });
-
-  console.log(`History recorded for room ${roomId}`);
 }
 
 function getRoomAccess(roomId, userId) {
@@ -134,6 +133,17 @@ function getRoomAccess(roomId, userId) {
     isInvited,
     hasAccess: isOwner || isInvited,
   };
+}
+
+function getRoomUsers(roomId) {
+  return Object.entries(users)
+    .filter(([, roomUser]) => roomUser.roomId === roomId)
+    .map(([socketId, roomUser]) => ({
+      socketId,
+      id: roomUser.userId,
+      name: roomUser.name,
+      email: roomUser.email,
+    }));
 }
 
 app.get("/", (req, res) => {
@@ -206,13 +216,10 @@ app.post(
     rooms[roomId] = {
       ownerId: req.user.id,
       invitedUsers: [],
+      language: "javascript",
     };
 
     roomHistory[roomId] = [];
-
-    console.log(
-      `Room ${roomId} created by ${req.user.name}`
-    );
 
     res.json({
       message: "Room created successfully",
@@ -243,8 +250,7 @@ app.post(
 
     if (room.ownerId !== req.user.id) {
       return res.status(403).json({
-        message:
-          "Only the room owner can invite users",
+        message: "Only the room owner can invite users",
       });
     }
 
@@ -261,15 +267,13 @@ app.post(
 
     if (!invitedUser) {
       return res.status(404).json({
-        message:
-          "User with this email does not exist",
+        message: "User with this email does not exist",
       });
     }
 
     if (invitedUser.id === room.ownerId) {
       return res.status(400).json({
-        message:
-          "Room owner already has access",
+        message: "Room owner already has access",
       });
     }
 
@@ -287,15 +291,13 @@ app.post(
       Object.values(invitations).find(
         (invitation) =>
           invitation.roomId === roomId &&
-          invitation.recipientId ===
-            invitedUser.id &&
+          invitation.recipientId === invitedUser.id &&
           invitation.status === "pending"
       );
 
     if (existingInvitation) {
       return res.status(400).json({
-        message:
-          "Invitation is already pending",
+        message: "Invitation is already pending",
       });
     }
 
@@ -317,13 +319,8 @@ app.post(
       declinedAt: null,
     };
 
-    console.log(
-      `${invitedUser.name} invited to room ${roomId}`
-    );
-
     res.json({
-      message:
-        "Invitation sent successfully",
+      message: "Invitation sent successfully",
       invitation: invitations[invitationId],
       invitedUser: {
         id: invitedUser.id,
@@ -343,8 +340,7 @@ app.get(
     )
       .filter(
         (invitation) =>
-          invitation.recipientId ===
-            req.user.id &&
+          invitation.recipientId === req.user.id &&
           invitation.status === "pending"
       )
       .sort(
@@ -362,8 +358,7 @@ app.post(
   "/invitations/:invitationId/accept",
   authenticateToken,
   (req, res) => {
-    const { invitationId } =
-      req.params;
+    const { invitationId } = req.params;
 
     const invitation =
       invitations[invitationId];
@@ -379,15 +374,13 @@ app.post(
       req.user.id
     ) {
       return res.status(403).json({
-        message:
-          "You cannot accept this invitation",
+        message: "You cannot accept this invitation",
       });
     }
 
     if (invitation.status !== "pending") {
       return res.status(400).json({
-        message:
-          "This invitation is no longer pending",
+        message: "This invitation is no longer pending",
       });
     }
 
@@ -398,8 +391,7 @@ app.post(
       invitation.status = "expired";
 
       return res.status(404).json({
-        message:
-          "The room no longer exists",
+        message: "The room no longer exists",
       });
     }
 
@@ -416,13 +408,8 @@ app.post(
     invitation.status = "accepted";
     invitation.acceptedAt = Date.now();
 
-    console.log(
-      `${req.user.name} accepted invitation for room ${invitation.roomId}`
-    );
-
     res.json({
-      message:
-        "Invitation accepted successfully",
+      message: "Invitation accepted successfully",
       roomId: invitation.roomId,
       invitation,
     });
@@ -433,8 +420,7 @@ app.post(
   "/invitations/:invitationId/decline",
   authenticateToken,
   (req, res) => {
-    const { invitationId } =
-      req.params;
+    const { invitationId } = req.params;
 
     const invitation =
       invitations[invitationId];
@@ -450,28 +436,21 @@ app.post(
       req.user.id
     ) {
       return res.status(403).json({
-        message:
-          "You cannot decline this invitation",
+        message: "You cannot decline this invitation",
       });
     }
 
     if (invitation.status !== "pending") {
       return res.status(400).json({
-        message:
-          "This invitation is no longer pending",
+        message: "This invitation is no longer pending",
       });
     }
 
     invitation.status = "declined";
     invitation.declinedAt = Date.now();
 
-    console.log(
-      `${req.user.name} declined invitation for room ${invitation.roomId}`
-    );
-
     res.json({
-      message:
-        "Invitation declined successfully",
+      message: "Invitation declined successfully",
       invitation,
     });
   }
@@ -523,30 +502,24 @@ app.get(
 
     if (!access.hasAccess) {
       return res.status(403).json({
-        message:
-          "You do not have access to this room",
+        message: "You do not have access to this room",
       });
     }
 
     res.json({
       roomId,
-      history:
-        roomHistory[roomId] || [],
+      history: roomHistory[roomId] || [],
     });
   }
 );
 
 io.on("connection", (socket) => {
-  console.log(
-    "User connected:",
-    socket.id
-  );
+  console.log("User connected:", socket.id);
 
   socket.on("join-room", (data) => {
     if (!data || typeof data !== "object") {
       socket.emit("auth-error", {
-        message:
-          "Invalid room join request",
+        message: "Invalid room join request",
       });
 
       return;
@@ -577,8 +550,7 @@ io.on("connection", (socket) => {
 
     if (!token) {
       socket.emit("auth-error", {
-        message:
-          "Authentication required",
+        message: "Authentication required",
       });
 
       return;
@@ -614,11 +586,21 @@ io.on("connection", (socket) => {
             "You are not invited to this room",
         });
 
-        console.log(
-          `${decoded.name} tried to access room ${roomId} without invitation`
-        );
-
         return;
+      }
+
+      if (users[socket.id]?.roomId) {
+        const oldRoomId =
+          users[socket.id].roomId;
+
+        socket.leave(oldRoomId);
+
+        socket
+          .to(oldRoomId)
+          .emit(
+            "user-left",
+            socket.id
+          );
       }
 
       socket.join(roomId);
@@ -626,19 +608,16 @@ io.on("connection", (socket) => {
       users[socket.id] = {
         userId: decoded.id,
         roomId,
-        name:
-          decoded.name || name,
+        name: decoded.name || name,
         email: decoded.email,
         x: 0,
         y: 0,
       };
 
-      console.log(
-        `${decoded.name} joined room ${roomId}`
-      );
-
       socket.emit("room-joined", {
         roomId,
+        language:
+          room.language || "javascript",
         user: {
           id: decoded.id,
           name: decoded.name,
@@ -646,23 +625,23 @@ io.on("connection", (socket) => {
         },
       });
 
+      socket.emit(
+        "room-users",
+        getRoomUsers(roomId)
+      );
+
       socket
         .to(roomId)
         .emit("user-joined", {
-          id: socket.id,
-          userId: decoded.id,
+          socketId: socket.id,
+          id: decoded.id,
           name: decoded.name,
           email: decoded.email,
         });
     } catch (error) {
       socket.emit("auth-error", {
-        message:
-          "Invalid or expired token",
+        message: "Invalid or expired token",
       });
-
-      console.log(
-        "Unauthorized room join attempt"
-      );
     }
   });
 
@@ -690,16 +669,21 @@ io.on("connection", (socket) => {
         return;
       }
 
-      recordHistory(user.roomId, {
+      const event = {
         type: data.type,
         object: data.object,
-      });
+      };
+
+      recordHistory(
+        user.roomId,
+        event
+      );
 
       socket
         .to(user.roomId)
         .emit(
           "whiteboard-object",
-          data
+          event
         );
     }
   );
@@ -717,12 +701,12 @@ io.on("connection", (socket) => {
       let roomId = null;
 
       if (typeof data === "string") {
-        roomId = data;
+        roomId = data.trim();
       } else if (
         data &&
         typeof data.roomId === "string"
       ) {
-        roomId = data.roomId;
+        roomId = data.roomId.trim();
       }
 
       if (!roomId) {
@@ -781,6 +765,54 @@ io.on("connection", (socket) => {
   );
 
   socket.on(
+    "language-update",
+    (data) => {
+      const user =
+        users[socket.id];
+
+      if (!user) {
+        return;
+      }
+
+      if (
+        !data ||
+        typeof data !== "object"
+      ) {
+        return;
+      }
+
+      if (
+        typeof data.language !== "string" ||
+        !data.language.trim()
+      ) {
+        return;
+      }
+
+      const room =
+        rooms[user.roomId];
+
+      if (!room) {
+        return;
+      }
+
+      room.language =
+        data.language.trim();
+
+      recordHistory(user.roomId, {
+        type: "language",
+        language: room.language,
+      });
+
+      socket
+        .to(user.roomId)
+        .emit(
+          "language-update",
+          room.language
+        );
+    }
+  );
+
+  socket.on(
     "cursor-move",
     (data) => {
       const user =
@@ -820,6 +852,33 @@ io.on("connection", (socket) => {
   );
 
   socket.on(
+    "typing",
+    (data) => {
+      const user =
+        users[socket.id];
+
+      if (!user) {
+        return;
+      }
+
+      const isTyping =
+        data &&
+        data.typing === true;
+
+      socket
+        .to(user.roomId)
+        .emit(
+          "user-typing",
+          {
+            id: socket.id,
+            name: user.name,
+            typing: isTyping,
+          }
+        );
+    }
+  );
+
+  socket.on(
     "leave-room",
     (data) => {
       const user =
@@ -844,9 +903,7 @@ io.on("connection", (socket) => {
         roomId = user.roomId;
       }
 
-      if (
-        roomId !== user.roomId
-      ) {
+      if (roomId !== user.roomId) {
         return;
       }
 
@@ -858,10 +915,6 @@ io.on("connection", (socket) => {
           "user-left",
           socket.id
         );
-
-      console.log(
-        `${user.name} left room ${roomId}`
-      );
 
       delete users[socket.id];
     }
