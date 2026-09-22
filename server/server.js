@@ -9,7 +9,10 @@ const server = http.createServer(app);
 
 app.use(
   cors({
-    origin: "https://syncspace-theta-three.vercel.app" ,
+    origin: [
+      "http://localhost:5173",
+      "https://syncspace-theta-three.vercel.app",
+    ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   })
 );
@@ -46,8 +49,11 @@ const users = {};
 
 const io = new Server(server, {
   cors: {
-origin: "https://syncspace-theta-three.vercel.app"   ,
- methods: ["GET", "POST"],
+    origin: [
+      "http://localhost:5173",
+      "https://syncspace-theta-three.vercel.app",
+    ],
+    methods: ["GET", "POST"],
   },
 });
 
