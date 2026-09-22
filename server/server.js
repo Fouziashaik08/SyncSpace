@@ -17,8 +17,7 @@ app.use(
 app.use(express.json());
 
 const JWT_SECRET = "syncspace_secret_key_2026";
-const PORT = 3001;
-
+const PORT = process.env.PORT || 3001;
 const usersDatabase = [
   {
     id: "user1",
