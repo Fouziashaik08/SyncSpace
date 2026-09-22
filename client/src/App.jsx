@@ -11,7 +11,7 @@ import {
 import Login from "./Login";
 import CodeEditor from "./CodeEditor";
 
-const socket = io("http://localhost:3001", {
+const socket = io("https://syncspace-kn2f.onrender.com", {
   autoConnect: false,
 });
 
@@ -283,7 +283,7 @@ function App() {
     try {
       setMessage("Creating room...");
 
-      const response = await fetch("http://localhost:3001/rooms", {
+      const response = await fetch("https://syncspace-kn2f.onrender.com/rooms", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${currentToken}`,
@@ -340,7 +340,7 @@ function App() {
       setMessage("Checking room access...");
 
       const response = await fetch(
-        `http://localhost:3001/rooms/${id}/access`,
+        `https://syncspace-kn2f.onrender.com/rooms/${id}/access`,
         {
           method: "GET",
           headers: {
@@ -395,7 +395,7 @@ function App() {
       setInvitationLoading(true);
 
       const response = await fetch(
-        "http://localhost:3001/invitations",
+        "https://syncspace-kn2f.onrender.com/invitations",
         {
           method: "GET",
           headers: {
@@ -433,7 +433,7 @@ function App() {
 
     try {
       const response = await fetch(
-        `http://localhost:3001/invitations/${invitationId}/accept`,
+        `https://syncspace-kn2f.onrender.com/invitations/${invitationId}/accept`,
         {
           method: "POST",
           headers: {
@@ -482,7 +482,7 @@ function App() {
 
     try {
       const response = await fetch(
-        `http://localhost:3001/invitations/${invitationId}/decline`,
+        `https://syncspace-kn2f.onrender.com/invitations/${invitationId}/decline`,
         {
           method: "POST",
           headers: {
@@ -532,7 +532,7 @@ function App() {
       setInviteMessage("Sending invitation...");
 
       const response = await fetch(
-        `http://localhost:3001/rooms/${roomId}/invite`,
+        `https://syncspace-kn2f.onrender.com/rooms/${roomId}/invite`,
         {
           method: "POST",
           headers: {
@@ -796,7 +796,7 @@ function App() {
       setReplayMessage("Loading session history...");
 
       const response = await fetch(
-        `http://localhost:3001/rooms/${roomId}/history`,
+        `https://syncspace-kn2f.onrender.com/rooms/${roomId}/history`,
         {
           method: "GET",
           headers: {
